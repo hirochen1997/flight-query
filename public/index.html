@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>航班搜索 - SkyNet Query</title>
+<style>
+  /* Google Fonts removed - blocked by GFW in China. Using system fonts instead. */
+
+  :root {
+    --bg-deep: #05080f;
+    --bg-card: rgba(10, 16, 32, 0.85);
+    --bg-input: rgba(8, 14, 28, 0.9);
+    --border: rgba(0, 240, 255, 0.15);
+    --border-active: rgba(0, 240, 255, 0.5);
+    --accent: #00f0ff;
+    --accent2: #b840ff;
+    --accent3: #ff6b35;
+    --text: #c8d6e5;
+    --text-bright: #e8f0f8;
+    --text-dim: #6a7a95;
+    --glow: 0 0 20px rgba(0, 240, 255, 0.3), 0 0 60px rgba(0, 240, 255, 0.1);
+    --glow-purple: 0 0 20px rgba(184, 64, 255, 0.3), 0 0 60px rgba(184, 64, 255, 0.1);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Noto Sans SC', -apple-system, sans-serif;
+    background: var(--bg-deep);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Animated grid background */
+  .bg-grid {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px);
+    background-size: 60px 60px;
+    animation: gridMove 20s linear infinite;
+  }
+  @keyframes gridMove { 0% { background-position: 0 0; } 100% { background-position: 60px 60px; } }
+
+  .bg-particles {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  }
+
+  .container { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+  /* ---- Header ---- */
+  .header {
+    text-align: center; padding: 40px 0 30px;
+    position: relative;
+  }
+  .header::after {
+    content: ''; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+    width: 300px; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  }
+  .logo {
+    font-family: 'Orbitron', monospace;
+    font-size: 42px; font-weight: 900;
+    background: linear-gradient(135deg, var(--accent), #00c8ff, var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 30px rgba(0, 240, 255, 0.5));
+    letter-spacing: 4px;
+  }
+  .subtitle { margin-top: 8px; font-size: 14px; color: var(--text-dim); letter-spacing: 6px; font-weight: 300; }
+
+  /* ---- Search Panel ---- */
+  .search-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    margin: 24px 0;
+    backdrop-filter: blur(20px);
+    box-shadow: var(--glow), inset 0 1px 0 rgba(0, 240, 255, 0.05);
+    transition: box-shadow 0.3s;
+  }
+  .search-panel:focus-within {
+    box-shadow: var(--glow), 0 0 40px rgba(0, 240, 255, 0.15), inset 0 1px 0 rgba(0, 240, 255, 0.08);
+    border-color: var(--border-active);
+  }
+
+  .filter-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+  }
+
+  .filter-group {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .filter-group label {
+    font-size: 11px; font-weight: 500; text-transform: uppercase;
+    color: var(--text-dim); letter-spacing: 2px;
+  }
+  .filter-group input,
+  .filter-group select {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text-bright);
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    transition: all 0.25s;
+  }
+  .filter-group input:focus,
+  .filter-group select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 12px rgba(0, 240, 255, 0.15);
+  }
+  .filter-group input::placeholder { color: var(--text-dim); }
+  .filter-group select option { background: #0a1428; color: var(--text-bright); }
+
+  .input-with-suggestions { position: relative; }
+  .suggestions {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 100;
+    background: rgba(6, 12, 24, 0.98);
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    max-height: 200px; overflow-y: auto;
+    display: none;
+    backdrop-filter: blur(20px);
+  }
+  .suggestions.active { display: block; }
+  .suggestion-item {
+    padding: 10px 14px; cursor: pointer; font-size: 13px;
+    transition: background 0.15s;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .suggestion-item:hover, .suggestion-item.selected { background: rgba(0, 240, 255, 0.1); }
+  .suggestion-item .code { color: var(--accent); font-family: 'Orbitron', monospace; font-size: 11px; }
+
+  /* Toggle switch */
+  .toggle-row {
+    display: flex; align-items: center; gap: 12px; padding-top: 4px;
+  }
+  .toggle-label-text { font-size: 13px; color: var(--text); }
+  .toggle {
+    position: relative; width: 48px; height: 26px; cursor: pointer;
+  }
+  .toggle input { display: none; }
+  .toggle .slider {
+    position: absolute; inset: 0;
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: 13px; transition: all 0.3s;
+  }
+  .toggle .slider::after {
+    content: ''; position: absolute;
+    width: 20px; height: 20px; left: 2px; top: 2px;
+    background: var(--text-dim); border-radius: 50%;
+    transition: all 0.3s;
+  }
+  .toggle input:checked + .slider {
+    border-color: var(--accent);
+    box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
+  }
+  .toggle input:checked + .slider::after {
+    left: 24px; background: var(--accent);
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+  }
+
+  /* Passenger counter */
+  .passenger-row {
+    display: flex; gap: 24px; flex-wrap: wrap;
+  }
+  .counter {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .counter .count-label { font-size: 12px; color: var(--text-dim); min-width: 28px; }
+  .counter .count-value { font-size: 16px; font-weight: 700; color: var(--accent); min-width: 24px; text-align: center; font-family: 'Orbitron', monospace; }
+  .counter button {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 1px solid var(--border); background: var(--bg-input);
+    color: var(--accent); font-size: 16px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s;
+    font-family: inherit;
+  }
+  .counter button:hover { border-color: var(--accent); box-shadow: 0 0 10px rgba(0, 240, 255, 0.2); }
+  .counter button:active { background: rgba(0, 240, 255, 0.1); }
+
+  /* Buttons */
+  .btn-row { display: flex; gap: 12px; margin-top: 24px; flex-wrap: wrap; }
+  .btn {
+    padding: 12px 32px; border-radius: 8px; border: none;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    font-family: inherit; letter-spacing: 1px;
+    transition: all 0.3s; position: relative; overflow: hidden;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #00c8ff, #0088cc);
+    color: #fff;
+    box-shadow: 0 0 20px rgba(0, 200, 255, 0.3);
+    flex: 1; min-width: 200px;
+  }
+  .btn-primary:hover {
+    box-shadow: 0 0 30px rgba(0, 200, 255, 0.5);
+    transform: translateY(-1px);
+  }
+  .btn-primary:active { transform: translateY(0); }
+  .btn-primary:disabled {
+    opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none;
+  }
+  .btn-secondary {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-bright);
+  }
+  .btn-secondary:hover { border-color: var(--accent); box-shadow: 0 0 12px rgba(0, 240, 255, 0.1); }
+
+  .btn .spinner {
+    display: none; width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite;
+    margin-right: 8px; vertical-align: middle;
+  }
+  .btn.loading .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- Results ---- */
+  .results-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin: 20px 0 16px; flex-wrap: wrap; gap: 12px;
+  }
+  .results-count {
+    font-family: 'Orbitron', monospace; font-size: 14px; color: var(--accent);
+  }
+  .sort-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  .sort-btn {
+    padding: 6px 14px; border-radius: 20px; border: 1px solid var(--border);
+    background: transparent; color: var(--text-dim); cursor: pointer;
+    font-size: 12px; font-family: inherit;
+    transition: all 0.2s;
+  }
+  .sort-btn.active {
+    background: rgba(0, 240, 255, 0.1); border-color: var(--accent);
+    color: var(--accent);
+  }
+  .sort-btn:hover { border-color: var(--accent); color: var(--text-bright); }
+
+  .results-grid { display: flex; flex-direction: column; gap: 12px; }
+
+  .flight-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    backdrop-filter: blur(20px);
+    transition: all 0.3s;
+    cursor: pointer;
+  }
+  .flight-card:hover {
+    border-color: var(--border-active);
+    box-shadow: 0 0 24px rgba(0, 240, 255, 0.08);
+    transform: translateY(-2px);
+  }
+  .flight-card-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px; flex-wrap: wrap; gap: 12px;
+  }
+  .airline-info { display: flex; align-items: center; gap: 10px; }
+  .airline-name { font-weight: 600; color: var(--text-bright); font-size: 14px; }
+  .flight-number { font-family: 'Orbitron', monospace; font-size: 12px; color: var(--text-dim); }
+
+  .flight-route {
+    display: flex; align-items: center; gap: 16px;
+    flex-wrap: wrap; justify-content: center;
+  }
+  .flight-city {
+    text-align: center; min-width: 80px;
+  }
+  .flight-time {
+    font-family: 'Orbitron', monospace; font-size: 22px; font-weight: 700;
+    color: var(--text-bright);
+  }
+  .flight-airport { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+  .flight-path {
+    flex: 1; min-width: 120px; position: relative; text-align: center;
+  }
+  .flight-path-line {
+    height: 2px; background: linear-gradient(90deg, var(--accent), var(--accent2));
+    position: relative; margin: 8px 0;
+  }
+  .flight-path-line::after {
+    content: '✈'; position: absolute; right: -6px; top: -10px;
+    font-size: 14px; color: var(--accent2);
+  }
+  .flight-duration { font-size: 11px; color: var(--text-dim); }
+  .flight-stops { font-size: 11px; color: var(--accent2); margin-top: 2px; }
+
+  .flight-price {
+    text-align: right; min-width: 100px;
+  }
+  .price-amount {
+    font-family: 'Orbitron', monospace; font-size: 26px; font-weight: 900;
+    color: var(--accent3);
+    text-shadow: 0 0 20px rgba(255, 107, 53, 0.3);
+  }
+  .price-label { font-size: 11px; color: var(--text-dim); }
+
+  .flight-details {
+    margin-top: 16px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+    display: none;
+  }
+  .flight-card.expanded .flight-details { display: block; }
+
+  .segment-list { display: flex; flex-direction: column; gap: 12px; }
+  .segment-item {
+    display: flex; align-items: center; gap: 16px;
+    padding: 10px; background: rgba(0, 240, 255, 0.03);
+    border-radius: 8px; flex-wrap: wrap; font-size: 13px;
+  }
+  .segment-time { font-family: 'Orbitron', monospace; color: var(--text-bright); min-width: 140px; }
+  .segment-info { color: var(--text-dim); flex: 1; }
+  .layover-badge {
+    padding: 2px 8px; border-radius: 4px;
+    background: rgba(184, 64, 255, 0.15); color: var(--accent2);
+    font-size: 11px; text-align: center; margin: 4px 0;
+  }
+
+  .booking-links {
+    display: flex; flex-direction: column; gap: 8px; margin-top: 16px;
+  }
+  .platform-compare {
+    display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .platform-price-tag {
+    padding: 8px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: rgba(0, 240, 255, 0.03);
+    font-size: 12px; text-align: center; min-width: 90px;
+    transition: all 0.2s;
+  }
+  .platform-price-tag.best-price {
+    border-color: var(--accent3); background: rgba(255, 107, 53, 0.1);
+    box-shadow: 0 0 12px rgba(255, 107, 53, 0.2);
+  }
+  .platform-price-tag .platform-name {
+    font-size: 10px; color: var(--text-dim); margin-bottom: 2px;
+  }
+  .platform-price-tag.best-price .platform-name {
+    color: var(--accent3); font-weight: 600;
+  }
+  .platform-price-tag .platform-price {
+    font-family: 'Orbitron', monospace; font-size: 16px; font-weight: 700;
+    color: var(--text-bright);
+  }
+  .platform-price-tag.best-price .platform-price {
+    color: var(--accent3);
+  }
+  .platform-price-tag .best-badge {
+    font-size: 9px; color: var(--accent3); margin-top: 1px;
+  }
+  .booking-link {
+    padding: 10px 20px; border-radius: 6px;
+    border: 1px solid var(--accent3); background: rgba(255, 107, 53, 0.1);
+    font-size: 13px; font-weight: 600; color: var(--accent3); text-decoration: none;
+    transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px;
+    box-shadow: 0 0 12px rgba(255, 107, 53, 0.15);
+  }
+  .booking-link:hover {
+    border-color: var(--accent3); background: rgba(255, 107, 53, 0.2);
+    box-shadow: 0 0 20px rgba(255, 107, 53, 0.3); transform: translateY(-1px);
+  }
+  .source-tag {
+    font-size: 11px; color: var(--text-dim); padding: 4px 10px;
+    border: 1px solid var(--border); border-radius: 12px;
+  }
+  .best-price-badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    background: rgba(255, 107, 53, 0.15); color: var(--accent3);
+    font-size: 10px; font-weight: 600; margin-left: 4px;
+  }
+  .expand-hint { font-size: 12px; color: var(--text-dim); text-align: center; margin-top: 8px; }
+
+  /* ---- Empty / Error / Loading ---- */
+  .empty-state, .error-state, .loading-state {
+    text-align: center; padding: 60px 20px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .empty-icon { font-size: 48px; margin-bottom: 16px; }
+  .empty-title {
+    font-family: 'Orbitron', monospace; font-size: 18px; color: var(--text-bright); margin-bottom: 8px;
+  }
+  .empty-desc { font-size: 14px; color: var(--text-dim); }
+
+  .warning-banner {
+    background: rgba(255, 107, 53, 0.1); border: 1px solid rgba(255, 107, 53, 0.3);
+    border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;
+    font-size: 13px; color: var(--accent3);
+    display: flex; align-items: flex-start; gap: 8px;
+  }
+
+  .credential-banner {
+    background: rgba(184, 64, 255, 0.08); border: 1px solid rgba(184, 64, 255, 0.2);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 24px;
+    font-size: 13px; color: var(--text);
+    line-height: 1.7;
+  }
+  .credential-banner strong { color: var(--accent2); }
+  .credential-banner code {
+    background: rgba(184, 64, 255, 0.1); padding: 2px 6px; border-radius: 4px;
+    font-family: 'Orbitron', monospace; font-size: 12px;
+  }
+
+  /* Calendar custom styling */
+  input[type="date"] {
+    color-scheme: dark;
+    position: relative;
+  }
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.8) hue-rotate(180deg); cursor: pointer;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(0, 240, 255, 0.2); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(0, 240, 255, 0.4); }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .logo { font-size: 28px; }
+    .filter-grid { grid-template-columns: 1fr 1fr; }
+    .flight-time { font-size: 17px; }
+    .price-amount { font-size: 20px; }
+    .flight-route { gap: 8px; }
+  }
+  @media (max-width: 480px) {
+    .filter-grid { grid-template-columns: 1fr; }
+    .container { padding: 12px; }
+    .search-panel { padding: 16px; }
+    .btn-row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+<canvas class="bg-particles" id="particles"></canvas>
+
+<div class="container">
+  <!-- Header -->
+  <header class="header">
+    <div class="logo">SKYNET QUERY</div>
+    <div class="subtitle">智 能 航 班 搜 索 终 端 <span style="color:#00f0ff;font-size:10px;">v3.1</span></div>
+  </header>
+
+  <!-- Credential Banner (hidden when configured) -->
+  <div class="credential-banner" id="credBanner" style="display:none">
+    <div style="flex:1">
+      <strong>⚡ FlyClaw — 零配置航班搜索</strong><br>
+      数据源：<strong>飞猪 Fliggy + Google Flights + Skiplagged + FR24</strong> 多源聚合<br>
+      无需 API Key，开箱即用。如遇异常请检查网络连接或更新 FlyClaw。<br>
+      安装: <code>git clone https://github.com/AI4MSE/FlyClaw /tmp/FlyClaw</code>
+    </div>
+  </div>
+
+  <!-- JS status indicator -->
+  <div id="jsStatus" style="text-align:center;padding:4px;font-size:11px;color:#ff6b35;">⚡ 正在初始化...</div>
+
+  <!-- file:// protocol warning -->
+  <div id="fileProtocolWarning" style="display:none;text-align:center;padding:20px;background:rgba(255,107,53,0.15);border:1px solid rgba(255,107,53,0.4);border-radius:12px;margin-bottom:24px">
+    <div style="font-size:24px;margin-bottom:8px">!!</div>
+    <div style="font-size:16px;font-weight:700;color:#ff6b35;margin-bottom:8px">请通过服务器访问，不要直接打开文件</div>
+    <div style="font-size:13px;color:#c8d6e5;line-height:1.8">
+      请复制以下地址到浏览器地址栏：<br>
+      <code style="background:rgba(0,240,255,0.15);padding:6px 16px;border-radius:6px;font-size:16px;color:#00f0ff;margin:8px 0;display:inline-block">http://localhost:3000</code><br>
+      当前访问方式：<code style="color:#ff6b35" id="currentUrl"></code>
+    </div>
+  </div>
+
+  <!-- Search Panel -->
+  <div class="search-panel" id="searchPanel">
+    <div class="filter-grid">
+      <div class="filter-group">
+        <label>出发城市 *</label>
+        <div class="input-with-suggestions" id="originWrapper">
+          <input type="text" id="origin" placeholder="例: 北京、上海、PEK" autocomplete="off">
+          <div class="suggestions" id="originSuggestions"></div>
+        </div>
+      </div>
+      <div class="filter-group">
+        <label>到达城市 *</label>
+        <div class="input-with-suggestions" id="destWrapper">
+          <input type="text" id="destination" placeholder="例: 三亚、上海、SYX" autocomplete="off">
+          <div class="suggestions" id="destSuggestions"></div>
+        </div>
+      </div>
+      <div class="filter-group">
+        <label>出发日期 *</label>
+        <input type="date" id="departureDate">
+      </div>
+      <div class="filter-group">
+        <label>舱位等级</label>
+        <select id="travelClass">
+          <option value="">全部舱位</option>
+          <option value="ECONOMY">经济舱</option>
+          <option value="PREMIUM_ECONOMY">超级经济舱</option>
+          <option value="BUSINESS">商务舱</option>
+          <option value="FIRST">头等舱</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>航空公司偏好</label>
+        <select id="airlines">
+          <option value="">全部航司</option>
+          <option value="CA">中国国航 (CA)</option>
+          <option value="MU">东方航空 (MU)</option>
+          <option value="CZ">南方航空 (CZ)</option>
+          <option value="HU">海南航空 (HU)</option>
+          <option value="3U">四川航空 (3U)</option>
+          <option value="ZH">深圳航空 (ZH)</option>
+          <option value="MF">厦门航空 (MF)</option>
+          <option value="GS">天津航空 (GS)</option>
+          <option value="SC">山东航空 (SC)</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>最高价格 (元)</label>
+        <input type="number" id="maxPrice" placeholder="不限" min="0" step="100">
+      </div>
+      <div class="filter-group">
+        <label>最大结果数</label>
+        <select id="maxResults">
+          <option value="10">10 条</option>
+          <option value="20" selected>20 条</option>
+          <option value="30">30 条</option>
+          <option value="50">50 条</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Row 2: passengers + non-stop -->
+    <div style="display:flex; flex-wrap:wrap; gap:32px; margin-top:16px; align-items:center">
+      <div class="passenger-row" style="align-items:center">
+        <span style="font-size:11px;color:var(--text-dim);letter-spacing:2px;text-transform:uppercase">乘客</span>
+        <div class="counter">
+          <span class="count-label">成人</span>
+          <button onclick="adjustCount('adults', -1)">−</button>
+          <span class="count-value" id="adultsCount">1</span>
+          <button onclick="adjustCount('adults', 1)">+</button>
+        </div>
+        <div class="counter">
+          <span class="count-label">儿童</span>
+          <button onclick="adjustCount('children', -1)">−</button>
+          <span class="count-value" id="childrenCount">0</span>
+          <button onclick="adjustCount('children', 1)">+</button>
+        </div>
+        <div class="counter">
+          <span class="count-label">婴儿</span>
+          <button onclick="adjustCount('infants', -1)">−</button>
+          <span class="count-value" id="infantsCount">0</span>
+          <button onclick="adjustCount('infants', 1)">+</button>
+        </div>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="nonStop">
+          <span class="slider"></span>
+        </label>
+        <span class="toggle-label-text">仅直飞</span>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="searchBtn" onclick="searchFlights()">
+        <span class="spinner"></span> 搜索航班
+      </button>
+      <button class="btn btn-secondary" onclick="clearFilters()">重置条件</button>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div id="resultsArea" style="display:none">
+    <div class="results-header">
+      <div class="results-count" id="resultsCount"></div>
+      <div class="sort-controls">
+        <span style="font-size:11px;color:var(--text-dim);margin-right:4px">排序:</span>
+        <button class="sort-btn" data-sort="price" onclick="setSort('price')">价格 ↑</button>
+        <button class="sort-btn" data-sort="price-desc" onclick="setSort('price-desc')">价格 ↓</button>
+        <button class="sort-btn" data-sort="departure" onclick="setSort('departure')">出发时间 ↑</button>
+        <button class="sort-btn" data-sort="departure-desc" onclick="setSort('departure-desc')">出发时间 ↓</button>
+        <button class="sort-btn" data-sort="duration" onclick="setSort('duration')">飞行时长 ↑</button>
+        <button class="sort-btn" data-sort="stops" onclick="setSort('stops')">中转次数 ↑</button>
+      </div>
+    </div>
+    <div class="results-grid" id="resultsGrid"></div>
+  </div>
+
+  <!-- Empty / loading states -->
+  <div id="stateArea">
+    <div class="empty-state" id="initState">
+      <div class="empty-icon">🛫</div>
+      <div class="empty-title">输入搜索条件</div>
+      <div class="empty-desc">选择出发地、目的地和日期后开始搜索真实航班数据</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============ State ============
+let allFlights = [];
+let currentSort = 'price';
+let passengers = { adults: 1, children: 0, infants: 0 };
+
+// ============ Init (robust: works even if DOMContentLoaded already fired) ============
+function initApp() {
+  // Detect file:// protocol access
+  if (window.location.protocol === 'file:') {
+    const warning = document.getElementById('fileProtocolWarning');
+    if (warning) { warning.style.display = 'block'; }
+    const curUrl = document.getElementById('currentUrl');
+    if (curUrl) { curUrl.textContent = window.location.href; }
+    document.getElementById('searchPanel').style.opacity = '0.4';
+    document.getElementById('searchPanel').style.pointerEvents = 'none';
+    const statusEl = document.getElementById('jsStatus');
+    if (statusEl) {
+      statusEl.textContent = '!! 检测到 file:// 协议访问，请使用 http://localhost:3000';
+      statusEl.style.color = '#ff6b35';
+      statusEl.style.display = 'block';
+    }
+    console.error('[SkyNet] Page opened via file:// - use http://localhost:3000 instead');
+    return;
+  }
+
+  try { initDate(); } catch(e) { console.error('initDate failed:', e); }
+  try { checkHealth(); } catch(e) { console.error('checkHealth failed:', e); }
+  try { initParticles(); } catch(e) { console.error('initParticles failed:', e); }
+  try { initAutocomplete('origin', 'originSuggestions'); } catch(e) { console.error('initAutocomplete origin failed:', e); }
+  try { initAutocomplete('destination', 'destSuggestions'); } catch(e) { console.error('initAutocomplete dest failed:', e); }
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.input-with-suggestions')) {
+      document.querySelectorAll('.suggestions').forEach(s => s.classList.remove('active'));
+    }
+  });
+
+  // Update status indicator to show ready state
+  const statusEl = document.getElementById('jsStatus');
+  if (statusEl) {
+    statusEl.textContent = '✓ 系统就绪';
+    statusEl.style.color = '#00f0ff';
+    setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
+  }
+
+  console.log('[SkyNet] App initialized. Autocomplete ready.');
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initApp);
+} else {
+  initApp();
+}
+
+function initDate() {
+  const today = new Date().toISOString().split('T')[0];
+  const nextWeek = new Date(Date.now() + 7*86400000).toISOString().split('T')[0];
+  document.getElementById('departureDate').setAttribute('min', today);
+
+  document.getElementById('departureDate').value = nextWeek;
+}
+
+// ============ Health Check ============
+async function checkHealth() {
+  try {
+    const res = await fetch('/api/health');
+    const data = await res.json();
+    document.getElementById('credBanner').style.display = data.status === 'ok' ? 'none' : 'block';
+  } catch {
+    // Server not running — banner stays hidden, errors surface on search
+  }
+}
+
+// ============ Passenger Counter ============
+function adjustCount(field, delta) {
+  const newVal = passengers[field] + delta;
+  if (newVal < 0) return;
+  if (field === 'adults' && newVal < 1) return;
+  if (field === 'infants' && newVal > passengers.adults) return;
+  passengers[field] = newVal;
+  document.getElementById(field + 'Count').textContent = newVal;
+}
+
+// ============ Airport Autocomplete ============
+let debounceTimers = {};
+
+function initAutocomplete(inputId, suggestionsId) {
+  const input = document.getElementById(inputId);
+  const suggestions = document.getElementById(suggestionsId);
+  if (!input || !suggestions) {
+    console.error(`[SkyNet] Cannot init autocomplete: #${inputId} or #${suggestionsId} not found`);
+    return;
+  }
+  let selectedIdx = -1;
+  console.log(`[SkyNet] Autocomplete ready: #${inputId}`);
+
+  input.addEventListener('input', () => {
+    clearTimeout(debounceTimers[inputId]);
+    const val = input.value.trim();
+    if (val.length === 0) {
+      suggestions.classList.remove('active');
+      return;
+    }
+    debounceTimers[inputId] = setTimeout(async () => {
+      try {
+        const url = `/api/airports?q=${encodeURIComponent(val)}`;
+        console.log(`[SkyNet] Fetching: ${url}`);
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        selectedIdx = -1;
+        suggestions.innerHTML = data.length === 0
+          ? '<div class="suggestion-item" style="color:var(--text-dim)">未找到匹配城市</div>'
+          : data.map((a, i) =>
+              `<div class="suggestion-item" data-idx="${i}" data-code="${a.code}" data-name="${a.name}">
+                <span>${a.name}</span><span class="code">${a.code}</span>
+              </div>`
+            ).join('');
+        suggestions.classList.add('active');
+      } catch(err) {
+        console.error(`[SkyNet] Autocomplete fetch failed:`, err);
+      }
+    }, 200);
+  });
+
+  input.addEventListener('keydown', e => {
+    const items = suggestions.querySelectorAll('.suggestion-item:not([style])');
+    if (!suggestions.classList.contains('active') || items.length === 0) return;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      selectedIdx = Math.min(selectedIdx + 1, items.length - 1);
+      items.forEach((el, i) => el.classList.toggle('selected', i === selectedIdx));
+      items[selectedIdx]?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      selectedIdx = Math.max(selectedIdx - 1, -1);
+      items.forEach((el, i) => el.classList.toggle('selected', i === selectedIdx));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (selectedIdx >= 0 && items[selectedIdx]) {
+        selectSuggestion(input, items[selectedIdx], suggestions);
+      }
+    } else if (e.key === 'Escape') {
+      suggestions.classList.remove('active');
+    }
+  });
+
+  suggestions.addEventListener('click', e => {
+    const item = e.target.closest('.suggestion-item');
+    if (item && item.dataset.code) {
+      selectSuggestion(input, item, suggestions);
+    }
+  });
+}
+
+function selectSuggestion(input, item, suggestions) {
+  input.value = `${item.dataset.name} (${item.dataset.code})`;
+  input.dataset.code = item.dataset.code;
+  suggestions.classList.remove('active');
+}
+
+// ============ Search ============
+async function searchFlights() {
+  const originInput = document.getElementById('origin').value.trim();
+  const destInput = document.getElementById('destination').value.trim();
+  const departureDate = document.getElementById('departureDate').value;
+  const travelClass = document.getElementById('travelClass').value;
+  const airlines = document.getElementById('airlines').value;
+  const maxPrice = document.getElementById('maxPrice').value;
+  const nonStop = document.getElementById('nonStop').checked;
+  const maxResults = parseInt(document.getElementById('maxResults').value);
+
+  if (!originInput || !destInput || !departureDate) {
+    showError('请填写出发城市、到达城市和出发日期');
+    return;
+  }
+
+  const btn = document.getElementById('searchBtn');
+  btn.classList.add('loading');
+  btn.disabled = true;
+  document.getElementById('resultsArea').style.display = 'none';
+  document.getElementById('stateArea').innerHTML = '';
+
+  try {
+    const body = {
+      origin: originInput,
+      destination: destInput,
+      departureDate,
+      adults: passengers.adults,
+      children: passengers.children,
+      infants: passengers.infants,
+      nonStop,
+      maxResults,
+    };
+    if (travelClass) body.travelClass = travelClass;
+    if (airlines) body.airlines = airlines;
+    if (maxPrice) body.maxPrice = parseInt(maxPrice);
+
+    const res = await fetch('/api/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    console.log(`[SkyNet] Search response status: ${res.status}`);
+
+    if (!res.ok) {
+      let errorMsg = `请求失败 (HTTP ${res.status})`;
+      try {
+        const data = await res.json();
+        if (data.error) errorMsg = data.error;
+      } catch {}
+      showError(errorMsg);
+      return;
+    }
+
+    const data = await res.json();
+    console.log(`[SkyNet] Search returned ${data.flights?.length || 0} flights`);
+
+    allFlights = data.flights || [];
+    const warnings = data.warnings;
+
+    if (allFlights.length === 0) {
+      let msg = warnings ? `<div class="warning-banner">⚠ ${warnings}</div>` : '';
+      msg += `<div class="empty-state">
+        <div class="empty-icon">🔍</div>
+        <div class="empty-title">未找到航班</div>
+        <div class="empty-desc">尝试扩大搜索范围，或调整日期/目的地</div>
+      </div>`;
+      document.getElementById('stateArea').innerHTML = msg;
+    } else {
+      document.getElementById('resultsArea').style.display = 'block';
+      document.getElementById('stateArea').innerHTML = warnings ? `<div class="warning-banner">⚠ ${warnings}</div>` : '';
+      applySort();
+      renderFlights();
+    }
+
+    document.getElementById('credBanner').style.display = 'none';
+  } catch (err) {
+    console.error('[SkyNet] Search error:', err);
+    showError(`网络错误: ${err.message}`);
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+}
+
+function showError(msg) {
+  document.getElementById('stateArea').innerHTML = `<div class="error-state">
+    <div class="empty-icon">⚠</div>
+    <div class="empty-title">搜索异常</div>
+    <div class="empty-desc">${msg}</div>
+  </div>`;
+}
+
+// ============ Sorting ============
+function setSort(type) {
+  currentSort = type;
+  document.querySelectorAll('.sort-btn').forEach(b => b.classList.toggle('active', b.dataset.sort === type));
+  applySort();
+  renderFlights();
+}
+
+function applySort() {
+  const sorters = {
+    'price': (a, b) => a.price.amount - b.price.amount,
+    'price-desc': (a, b) => b.price.amount - a.price.amount,
+    'departure': (a, b) => new Date(a.departureTime) - new Date(b.departureTime),
+    'departure-desc': (a, b) => new Date(b.departureTime) - new Date(a.departureTime),
+    'duration': (a, b) => (a.stops * 1000 + parseDuration(a.duration)) - (b.stops * 1000 + parseDuration(b.duration)),
+    'stops': (a, b) => a.stops - b.stops || a.price.amount - b.price.amount,
+  };
+  allFlights.sort(sorters[currentSort] || sorters['price']);
+}
+
+function parseDuration(d) {
+  const h = d.match(/(\d+)h/);
+  const m = d.match(/(\d+)m/);
+  return (h ? parseInt(h[1]) * 60 : 0) + (m ? parseInt(m[1]) : 0);
+}
+
+// ============ Render ============
+function renderFlights() {
+  document.getElementById('resultsCount').textContent =
+    `[${allFlights.length}] 个航班 — 排序: ${
+      {price:'价格↑', 'price-desc':'价格↓', departure:'出发↑', 'departure-desc':'出发↓', duration:'时长↑', stops:'中转↑'}[currentSort]
+    }`;
+
+  const grid = document.getElementById('resultsGrid');
+  grid.innerHTML = allFlights.map((f, i) => `
+    <div class="flight-card" id="card-${i}" onclick="toggleCard(${i})">
+      <div class="flight-card-header">
+        <div class="airline-info">
+          <div>
+            <div class="airline-name">${f.carrierNames.join(', ')}</div>
+            <div class="flight-number">${f.segments.map(s => s.flightNumber).join(' / ')}</div>
+          </div>
+        </div>
+        <div class="flight-route">
+          <div class="flight-city">
+            <div class="flight-time">${formatTime(f.departureTime)}</div>
+            <div class="flight-airport">${f.segments[0].departure.iata}</div>
+          </div>
+          <div class="flight-path">
+            <div class="flight-path-line"></div>
+            <div class="flight-duration">${f.duration.replace('h','h ').replace('m','m')}</div>
+            ${f.stops > 0 ? `<div class="flight-stops">${f.stops} 次中转 · ${f.stopIatas.join(' → ')}</div>` : '<div class="flight-stops" style="color:var(--accent)">直飞</div>'}
+          </div>
+          <div class="flight-city">
+            <div class="flight-time">${formatTime(f.arrivalTime)}</div>
+            <div class="flight-airport">${f.segments[f.segments.length-1].arrival.iata}</div>
+          </div>
+        </div>
+        <div class="flight-price">
+          <div class="price-amount">${f.price.formatted}</div>
+          <div class="price-label">${f.bestPricePlatform ? f.platformLabels[f.bestPricePlatform] || '' : ''} 最低价</div>
+        </div>
+      </div>
+      <div class="expand-hint">点击查看详情与多平台比价 ▼</div>
+      <div class="flight-details">
+        <div class="segment-list">
+          ${f.segments.map((seg, si) => `
+            <div class="segment-item">
+              <div class="segment-time">
+                ${formatDateTime(seg.departure.time)} → ${formatDateTime(seg.arrival.time)}
+              </div>
+              <div class="segment-info">
+                ${seg.carrierName} · ${seg.flightNumber} · ${seg.aircraft}
+                ${seg.numberOfStops > 0 ? ` · 经停${seg.numberOfStops}站` : ''}
+              </div>
+            </div>
+            ${si < f.segments.length - 1 ? `<div class="layover-badge">⏳ 中转等待 · ${f.stopIatas[si]}</div>` : ''}
+          `).join('')}
+        </div>
+        <div class="booking-links">
+          ${f.platformCount > 0 ? `
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px;">📊 多平台价格对比 (共${f.platformCount}个平台)</div>
+            <div class="platform-compare">
+              ${f.platformPrices.map(p => `
+                <div class="platform-price-tag${p.isBest ? ' best-price' : ''}">
+                  <div class="platform-name">${f.platformLabels[p.platform] || p.platform}</div>
+                  <div class="platform-price">${p.formatted}</div>
+                  ${p.isBest ? '<div class="best-badge">最低价</div>' : ''}
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
+          ${f.bookingLink ? `
+            <a href="${escapeHtml(f.bookingLink)}" target="_blank" class="booking-link" onclick="event.stopPropagation()">
+              🎫 立即购票 (${f.platformLabels[f.bestPricePlatform] || '飞猪'})
+            </a>
+          ` : ''}
+          ${(f.searchLinks || []).length > 0 ? `
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
+              ${f.searchLinks.map(l => `
+                <a href="${escapeHtml(l.url)}" target="_blank" class="booking-link" style="font-size:12px;padding:6px 12px;" onclick="event.stopPropagation()">
+                  ${l.isDirectBook ? '🎫' : '🔍'} ${escapeHtml(l.name)}${l.isDirectBook ? ' 直接购票' : (l.isTargetedSearch ? ' 指定航班搜索' : ' 搜索比价')}
+                </a>
+              `).join('')}
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  // Init active sort button
+  document.querySelectorAll('.sort-btn').forEach(b => b.classList.toggle('active', b.dataset.sort === currentSort));
+}
+
+function toggleCard(idx) {
+  document.getElementById(`card-${idx}`).classList.toggle('expanded');
+}
+
+function formatTime(isoString) {
+  const d = new Date(isoString);
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function formatDateTime(isoString) {
+  const d = new Date(isoString);
+  return d.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ============ Reset ============
+function clearFilters() {
+  document.getElementById('origin').value = '';
+  delete document.getElementById('origin').dataset.code;
+  document.getElementById('destination').value = '';
+  delete document.getElementById('destination').dataset.code;
+  initDate();
+  document.getElementById('travelClass').value = '';
+  document.getElementById('airlines').value = '';
+  document.getElementById('maxPrice').value = '';
+  document.getElementById('maxResults').value = '20';
+  document.getElementById('nonStop').checked = false;
+  passengers = { adults: 1, children: 0, infants: 0 };
+  document.getElementById('adultsCount').textContent = '1';
+  document.getElementById('childrenCount').textContent = '0';
+  document.getElementById('infantsCount').textContent = '0';
+  allFlights = [];
+  document.getElementById('resultsArea').style.display = 'none';
+  document.getElementById('stateArea').innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon">🛫</div>
+      <div class="empty-title">输入搜索条件</div>
+      <div class="empty-desc">选择出发地、目的地和日期后开始搜索真实航班数据</div>
+    </div>`;
+}
+
+// ============ Particles Background ============
+function initParticles() {
+  const canvas = document.getElementById('particles');
+  const ctx = canvas.getContext('2d');
+  let particles = [];
+  let animId;
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  function createParticles() {
+    particles = [];
+    const count = Math.floor((canvas.width * canvas.height) / 15000);
+    for (let i = 0; i < count; i++) {
+      particles.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        r: Math.random() * 1.5 + 0.5,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+        alpha: Math.random() * 0.5 + 0.1,
+      });
+    }
+  }
+  createParticles();
+  window.addEventListener('resize', createParticles);
+
+  function animate() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    particles.forEach(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.x < 0) p.x = canvas.width;
+      if (p.x > canvas.width) p.x = 0;
+      if (p.y < 0) p.y = canvas.height;
+      if (p.y > canvas.height) p.y = 0;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0, 240, 255, ${p.alpha})`;
+      ctx.fill();
+    });
+
+    // Draw connections between nearby particles
+    for (let i = 0; i < particles.length; i++) {
+      for (let j = i + 1; j < particles.length; j++) {
+        const dx = particles[i].x - particles[j].x;
+        const dy = particles[i].y - particles[j].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 120) {
+          ctx.beginPath();
+          ctx.moveTo(particles[i].x, particles[i].y);
+          ctx.lineTo(particles[j].x, particles[j].y);
+          ctx.strokeStyle = `rgba(0, 240, 255, ${0.05 * (1 - dist / 120)})`;
+          ctx.stroke();
+        }
+      }
+    }
+    animId = requestAnimationFrame(animate);
+  }
+  animate();
+}
+</script>
+</body>
+</html>
