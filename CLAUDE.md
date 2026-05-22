@@ -77,7 +77,7 @@ FlyClaw's `airport_manager.resolve_all("北京")` returns `["PEK", "PKX"]`. Serv
 **After every round of changes**, before handing control back to the user:
 
 1. Summarize what was modified and why
-2. Commit all changes to git with a concise message describing the "why"
+2. Commit all changes to git with a concise message describing the "why", then `git push`
 3. Restart the server: `lsof -ti:3000 | xargs kill -9 2>/dev/null; node server.js &`
 4. Open the page: `open http://localhost:3000`
 
