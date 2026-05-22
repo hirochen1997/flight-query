@@ -17,6 +17,15 @@ node server.js          # or npm start
 # Opens at http://localhost:3000
 ```
 
+### Public access via Cloudflare Tunnel
+
+```bash
+cloudflared tunnel --url http://localhost:3000
+# Generates a public *.trycloudflare.com URL
+```
+
+Note: `trycloudflare.com` domains may be partially blocked in China. For reliable China access, deploy to a Hong Kong or domestic VPS.
+
 Must access via `http://localhost:3000` — opening `index.html` directly from Finder (file:// protocol) breaks CORS and autocomplete.
 
 FlyClaw must be cloned to `/tmp/FlyClaw`. Ctrip scraping requires Google Chrome at `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`.
