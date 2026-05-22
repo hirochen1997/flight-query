@@ -221,26 +221,25 @@ function flyclawSearchLegacy(params) {
   });
 }
 
-// ---- OTA Scraper subprocess call (Ctrip + Qunar + Tongcheng) ----
-function otaScraperSearch(params) {
+// ---- CDP Scraper subprocess call (Ctrip + Qunar via Chrome CDP) ----
+// Requires Chrome running with --remote-debugging-port=9222 and user logged into platforms.
+// Falls back to empty results if Chrome is not available.
+function cdpScraperSearch(params) {
   return new Promise((resolve) => {
     const args = [
-      join(__dirname, 'ota_scraper.py'),
-      '--from', params.origin,
-      '--to', params.destination,
-      '--date', params.date,
-      '--platform', 'all',
+      join(__dirname, 'cdp_scraper.py'),
+      params.origin,
+      params.destination,
+      params.date,
+      '--json',
     ];
-    // Pass city codes for Ctrip city-level search
-    if (params.cityOrigin) args.push('--city-origin', params.cityOrigin);
-    if (params.cityDest) args.push('--city-dest', params.cityDest);
 
-    console.log('OTA Scraper args:', args.join(' '));
+    console.log('CDP Scraper args:', args.join(' '));
 
     const proc = spawn(PYTHON, args, {
       cwd: __dirname,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
-      timeout: 90000,
+      env: { ...process.env, NO_PROXY: 'localhost,127.0.0.1,::1', PYTHONIOENCODING: 'utf-8' },
+      timeout: 180000,
     });
 
     let stdout = '';
@@ -250,18 +249,24 @@ function otaScraperSearch(params) {
     proc.stderr.on('data', (data) => { stderr += data.toString(); });
 
     proc.on('close', (code) => {
-      if (stderr) console.log('OTA Scraper:', stderr.split('\n').filter(l => l.trim()).join('\n'));
+      if (stderr) console.log('CDP Scraper:', stderr.split('\n').filter(l => l.trim()).join('\n'));
       try {
-        const parsed = JSON.parse(stdout.trim());
+        // Find JSON object in output (may be mixed with log lines)
+        const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          console.log('CDP Scraper no JSON found in stdout');
+          return resolve({ ctrip: [], qunar: [], tongcheng: [] });
+        }
+        const parsed = JSON.parse(jsonMatch[0]);
         resolve(parsed);
       } catch (err) {
-        console.error('OTA Scraper parse error:', err.message);
+        console.error('CDP Scraper parse error:', err.message);
         resolve({ ctrip: [], qunar: [], tongcheng: [] });
       }
     });
 
     proc.on('error', (err) => {
-      console.error('OTA Scraper start error:', err.message);
+      console.error('CDP Scraper start error:', err.message);
       resolve({ ctrip: [], qunar: [], tongcheng: [] });
     });
   });
@@ -468,14 +473,12 @@ app.post('/api/search', async (req, res) => {
         console.error('Fliggy search failed:', err.message, err.stack);
         return [];
       }),
-      otaScraperSearch({
-        origin: originCode,       // IATA code for Qunar/Tongcheng URLs
-        destination: destCode,
+      cdpScraperSearch({
+        origin: origin,           // City name or IATA code (scraper handles both)
+        destination: destination,
         date: departureDate,
-        cityOrigin: originCityCode,
-        cityDest: destCityCode,
       }).catch(err => {
-        console.error('OTA scraper failed:', err.message);
+        console.error('CDP scraper failed:', err.message);
         return { ctrip: [], qunar: [], tongcheng: [] };
       }),
     ]);
@@ -655,7 +658,7 @@ app.get('*', (req, res) => {
 if (!process.env.NETLIFY) {
   app.listen(PORT, () => {
     console.log(`Flight Query Server running at http://localhost:${PORT}`);
-    console.log('Data source: Fliggy MCP (Node.js) + Ctrip (Playwright)');
+    console.log('Data source: Fliggy MCP (Node.js) + Ctrip/Qunar (Chrome CDP)');
   });
 }
 
