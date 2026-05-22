@@ -1,0 +1,14 @@
+[build]
+  publish = "public/"
+
+# Proxy API calls to Cloudflare Tunnel backend
+[[redirects]]
+  from = "/api/*"
+  to = "https://sheffield-olive-species-feet.trycloudflare.com/api/:splat"
+  status = 200
+
+# SPA fallback
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

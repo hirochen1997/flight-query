@@ -26,6 +26,24 @@ cloudflared tunnel --url http://localhost:3000
 
 Note: `trycloudflare.com` domains may be partially blocked in China. For reliable China access, deploy to a Hong Kong or domestic VPS.
 
+### Production deployment (Netlify + Cloudflare Tunnel)
+
+Frontend hosted on Netlify (`https://flight-query.netlify.app`), API proxied to local server via Cloudflare Tunnel.
+
+```bash
+# Start backend tunnel
+cloudflared tunnel --url http://localhost:3000 &
+
+# Deploy frontend (update tunnel URL in netlify.toml first)
+npx netlify deploy --dir=public --prod
+```
+
+Architecture:
+```
+User (China) → flight-query.netlify.app (Netlify CDN)
+  → /api/* → Cloudflare Tunnel → localhost:3000 (this machine)
+```
+
 Must access via `http://localhost:3000` — opening `index.html` directly from Finder (file:// protocol) breaks CORS and autocomplete.
 
 FlyClaw must be cloned to `/tmp/FlyClaw`. Ctrip scraping requires Google Chrome at `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`.
