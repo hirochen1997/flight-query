@@ -1,13 +1,17 @@
 [build]
   publish = "public/"
 
-# Proxy API calls to Cloudflare Tunnel backend
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Route API calls to Netlify Function (Node.js Fliggy — no Python needed)
 [[redirects]]
   from = "/api/*"
-  to = "https://sheffield-olive-species-feet.trycloudflare.com/api/:splat"
+  to = "/.netlify/functions/api/:splat"
   status = 200
 
-# SPA fallback
+# SPA fallback — all other routes serve index.html
 [[redirects]]
   from = "/*"
   to = "/index.html"

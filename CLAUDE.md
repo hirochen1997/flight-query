@@ -6,8 +6,8 @@ Multi-platform Chinese OTA flight price comparison app. Aggregates Fliggy + Ctri
 
 - **Backend**: Node.js Express (`server.js`), ES modules
 - **Frontend**: Vanilla JS SPA (`public/index.html`), dark sci-fi theme
-- **Fliggy data**: Python CLI `/tmp/FlyClaw/flyclaw.py search` (Fliggy MCP API, HMAC-SHA256 signing, built-in API key)
-- **Ctrip data**: Python Playwright scraper (`ota_scraper.py`) using system Chrome headless
+- **Fliggy data**: Node.js MCP client (`fliggy.js`) — direct HTTP call with HMAC-SHA256 + AES-256-GCM. No Python needed.
+- **Ctrip data**: Python Playwright scraper (`ota_scraper.py`) using system Chrome headless (local only)
 - **Qunar / Tongcheng**: Blocked by anti-bot detection, return 0 results
 
 ## Running
@@ -26,22 +26,20 @@ cloudflared tunnel --url http://localhost:3000
 
 Note: `trycloudflare.com` domains may be partially blocked in China. For reliable China access, deploy to a Hong Kong or domestic VPS.
 
-### Production deployment (Netlify + Cloudflare Tunnel)
+### Production deployment (Netlify)
 
-Frontend hosted on Netlify (`https://flight-query.netlify.app`), API proxied to local server via Cloudflare Tunnel.
+Site: **https://flight-query.netlify.app** (China-accessible, no VPN needed).
+
+Fliggy search runs via Netlify Function (Node.js `fliggy.js` → `flyai.open.fliggy.com`). No Mac required — the site works 24/7 from anywhere.
+
+Ctrip scraping is unavailable on Netlify (no Chrome/Python). For multi-platform results, run locally:
+```bash
+node server.js  # Fliggy (Node.js) + Ctrip (Playwright)
+```
 
 ```bash
-# Start backend tunnel
-cloudflared tunnel --url http://localhost:3000 &
-
-# Deploy frontend (update tunnel URL in netlify.toml first)
-npx netlify deploy --dir=public --prod
-```
-
-Architecture:
-```
-User (China) → flight-query.netlify.app (Netlify CDN)
-  → /api/* → Cloudflare Tunnel → localhost:3000 (this machine)
+# Deploy
+npx netlify deploy --dir=public --functions=netlify/functions --prod
 ```
 
 Must access via `http://localhost:3000` — opening `index.html` directly from Finder (file:// protocol) breaks CORS and autocomplete.

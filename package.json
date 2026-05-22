@@ -11,7 +11,8 @@
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.21.0"
+    "express": "^4.21.0",
+    "serverless-http": "^4.0.0"
   },
   "devDependencies": {
     "netlify-cli": "^26.0.2"

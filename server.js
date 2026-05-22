@@ -4,24 +4,32 @@ import cors from 'cors';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { spawn } from 'child_process';
+import { searchFliggy } from './fliggy.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = (() => {
+  try { return dirname(fileURLToPath(import.meta.url)); }
+  catch { return process.cwd(); }
+})();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// FlyClaw installation path (cloned to /tmp/FlyClaw)
+// FlyClaw installation path (cloned to /tmp/FlyClaw) — kept as fallback
 const FLYCLAW_DIR = '/tmp/FlyClaw';
 const PYTHON = 'python3';
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(join(__dirname, 'public'), {
-  setHeaders: (res) => {
-    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.set('Pragma', 'no-cache');
-    res.set('Expires', '0');
-  },
-}));
+
+// Static files (local dev only — Netlify serves public/ natively)
+if (!process.env.NETLIFY) {
+  app.use(express.static(join(__dirname, 'public'), {
+    setHeaders: (res) => {
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
+    },
+  }));
+}
 
 // ---- City → IATA code mapping ----
 const CITY_MAP = {
@@ -130,8 +138,25 @@ function resolveFliggyInput(input) {
   return null;
 }
 
-// ---- FlyClaw subprocess call (Fliggy data) ----
-function flyclawSearch(params) {
+// ---- Fliggy search via Node.js MCP client ----
+async function fliggySearch(params) {
+  const cabinMap = {
+    'ECONOMY': 'economy', 'PREMIUM_ECONOMY': 'premium',
+    'BUSINESS': 'business', 'FIRST': 'first',
+  };
+  return searchFliggy({
+    origin: params.origin,
+    destination: params.destination,
+    date: params.date,
+    cabin: params.cabin ? cabinMap[params.cabin] || params.cabin : 'economy',
+    stops: params.stops !== undefined ? params.stops : 'any',
+    limit: params.limit,
+    timeout: 15,
+  });
+}
+
+// ---- FlyClaw subprocess call (Fliggy) — kept as fallback ----
+function flyclawSearchLegacy(params) {
   return new Promise((resolve, reject) => {
     const args = [
       join(FLYCLAW_DIR, 'flyclaw.py'), 'search',
@@ -439,8 +464,8 @@ app.post('/api/search', async (req, res) => {
     console.log(`City codes for Ctrip: ${originCityCode} → ${destCityCode}`);
 
     const [fliggyFlights, otaResults] = await Promise.all([
-      flyclawSearch(flyclawParams).catch(err => {
-        console.error('FlyClaw search failed:', err.message);
+      fliggySearch(flyclawParams).catch(err => {
+        console.error('Fliggy search failed:', err.message, err.stack);
         return [];
       }),
       otaScraperSearch({
@@ -618,22 +643,20 @@ app.get('/api/airports', (req, res) => {
 
 // ---- Health check ----
 app.get('/api/health', async (req, res) => {
-  try {
-    const { statSync } = await import('fs');
-    const flyclawPath = join(FLYCLAW_DIR, 'flyclaw.py');
-    statSync(flyclawPath);
-    res.json({ status: 'ok', message: '飞猪航班数据 (FlyClaw)' });
-  } catch {
-    res.json({ status: 'error', message: 'FlyClaw 未安装，请先克隆至 /tmp/FlyClaw' });
-  }
+  res.json({ status: 'ok', message: '飞猪航班数据 (Fliggy MCP)' });
 });
 
-// ---- SPA fallback ----
+// ---- SPA fallback (local only) ----
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Flight Query Server running at http://localhost:${PORT}`);
-  console.log('Data source: FlyClaw (飞猪 Fliggy MCP)');
-});
+// Only listen when running as standalone server
+if (!process.env.NETLIFY) {
+  app.listen(PORT, () => {
+    console.log(`Flight Query Server running at http://localhost:${PORT}`);
+    console.log('Data source: Fliggy MCP (Node.js) + Ctrip (Playwright)');
+  });
+}
+
+export default app;
