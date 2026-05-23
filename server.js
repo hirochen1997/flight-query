@@ -336,6 +336,7 @@ function mergeFlightsByNumber(fliggyFlights, otaResults, date) {
         aircraft_type: f.aircraft_type || '',
         segments: f.segments || [],
         prices: {},
+        allPrices: {},
         booking_urls: {},
         search_urls: {},
       };
@@ -378,13 +379,19 @@ function mergeFlightsByNumber(fliggyFlights, otaResults, date) {
           arrival_time: f.arrival_time,
           stops: f.stops || 0,
           prices: {},
+          allPrices: {},       // Store all price variants per platform
           booking_urls: {},
           search_urls: {},
         };
       }
-      // Only add price if platform doesn't already have one for this flight
-      if (!merged[key].prices[platform]) {
-        merged[key].prices[platform] = f.price || 0;
+      // Use lowest price for comparison, store all price variants
+      const otaPrice = f.price || f.lowestPrice || 0;
+      if (!merged[key].prices[platform] || otaPrice < merged[key].prices[platform]) {
+        merged[key].prices[platform] = otaPrice;
+      }
+      // Store all price variants if available
+      if (f.prices && f.prices.length > 0) {
+        merged[key].allPrices[platform] = f.prices;
       }
       if (f.booking_url) merged[key].booking_urls[platform] = f.booking_url;
       if (f.search_url) merged[key].search_urls[platform] = f.search_url;
@@ -549,6 +556,8 @@ app.post('/api/search', async (req, res) => {
           isBest: platform === f.best_price_platform,
           bookingUrl: f.booking_urls[platform] || null,
           searchUrl: f.search_urls[platform] || null,
+          // Include all price variants for this platform (Ctrip returns multiple cabins/discounts)
+          allPrices: f.allPrices[platform] || [],
         }))
         .sort((a, b) => a.price - b.price);
 
