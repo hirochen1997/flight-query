@@ -138,8 +138,8 @@ def parse_ctrip_api_flight(itinerary):
                 "operateAirline": fl.get("operateAirlineName", ""),
                 "aircraft": fl.get("aircraftName", ""),
                 "aircraftCode": fl.get("aircraftCode", ""),
-                "departure_time": _extract_time(fl.get("departureDateTime", "")),
-                "arrival_time": _extract_time(fl.get("arrivalDateTime", "")),
+                "departure_time": _format_datetime(fl.get("departureDateTime", "")),
+                "arrival_time": _format_datetime(fl.get("arrivalDateTime", "")),
                 "depAirport": fl.get("departureAirportName", ""),
                 "arrAirport": fl.get("arrivalAirportName", ""),
                 "depAirportCode": fl.get("departureAirportCode", ""),
@@ -235,6 +235,13 @@ def parse_ctrip_api_flight(itinerary):
             flights.append(flight)
 
     return flights
+
+
+def _format_datetime(datetime_str):
+    """Convert Ctrip '2026-06-20 20:00:00' to ISO '2026-06-20T20:00:00'."""
+    if not datetime_str:
+        return ""
+    return datetime_str.replace(" ", "T")
 
 
 def _extract_time(datetime_str):

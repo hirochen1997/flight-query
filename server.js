@@ -399,6 +399,18 @@ function mergeFlightsByNumber(fliggyFlights, otaResults, date) {
       if (!merged[key].airline && f.airline) merged[key].airline = f.airline;
       if (!merged[key].departure_time && f.departure_time) merged[key].departure_time = f.departure_time;
       if (!merged[key].arrival_time && f.arrival_time) merged[key].arrival_time = f.arrival_time;
+      // Normalize time format: if OTA time is just "HH:MM", prepend search date
+      if (f.departure_time && /^\d{2}:\d{2}$/.test(f.departure_time)) {
+        f.departure_time = `${date}T${f.departure_time}:00`;
+      }
+      if (f.arrival_time && /^\d{2}:\d{2}$/.test(f.arrival_time)) {
+        f.arrival_time = `${date}T${f.arrival_time}:00`;
+      }
+      // Map Ctrip/Qunar fields to standard names when Fliggy didn't set them
+      if (!merged[key].origin_iata && f.depAirportCode) merged[key].origin_iata = f.depAirportCode;
+      if (!merged[key].destination_iata && f.arrAirportCode) merged[key].destination_iata = f.arrAirportCode;
+      if (!merged[key].duration_minutes && f.duration) merged[key].duration_minutes = f.duration;
+      if (!merged[key].aircraft_type && f.aircraft) merged[key].aircraft_type = f.aircraft;
       if (!merged[key].flight_number || merged[key].flight_number === key) {
         // If Fliggy didn't provide a flight number, use the OTA one
         if (f.flight_number) merged[key].flight_number = f.flight_number;
