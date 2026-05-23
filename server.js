@@ -261,6 +261,7 @@ function flyclawSearchLegacy(params) {
 function cdpScraperSearch(params) {
   return new Promise((resolve) => {
     const args = [
+      '-u',  // unbuffered stdout (critical: Python buffers pipe output)
       join(__dirname, 'cdp_scraper.py'),
       params.origin,
       params.destination,
@@ -272,8 +273,8 @@ function cdpScraperSearch(params) {
 
     const proc = spawn(PYTHON, args, {
       cwd: __dirname,
-      env: { ...process.env, NO_PROXY: 'localhost,127.0.0.1,::1', PYTHONIOENCODING: 'utf-8' },
-      timeout: 30000,
+      env: { ...process.env, NO_PROXY: 'localhost,127.0.0.1,::1', PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
+      timeout: 45000,  // Increased for old Ctrip page which loads slower
     });
 
     let stdout = '';

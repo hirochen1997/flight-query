@@ -326,51 +326,57 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
         await cdp_send(ws, "Network.enable")
         await cdp_send(ws, "Runtime.enable")
 
-        # Install JS fetch + XHR interceptor as the PRIMARY capture method.
-        # This runs before any page scripts and is the simplest reliable approach.
-        # We also enable Fetch domain as backup to pause responses at CDP level.
+        # Clear browser cache and cookies to prevent Ctrip from
+        # redirecting to the old page based on prior session state.
+        try:
+            await cdp_send(ws, "Network.clearBrowserCache", timeout=5)
+            await cdp_send(ws, "Network.clearBrowserCookies", timeout=5)
+        except Exception:
+            pass
+
+        # Install JS fetch + XHR interceptor to capture flightItineraryList
+        # from ANY API response, regardless of which Ctrip page version loads.
         intercept_js = """
         (function() {
             window.__ctripFlightData = null;
             window.__ctripFetchDone = false;
+
+            function tryCaptureJSON(obj) {
+                if (!obj || !obj.data || !obj.data.flightItineraryList) return;
+                var list = obj.data.flightItineraryList;
+                if (Array.isArray(list) && list.length > 0) {
+                    window.__ctripFlightData = list;
+                    window.__ctripFetchDone = true;
+                }
+            }
+
             var _origFetch = window.fetch;
             window.fetch = function() {
                 var args = arguments;
-                var url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
                 var p = _origFetch.apply(this, args);
-                if (url.indexOf('batchSearch') !== -1 && url.indexOf('search/api/search') !== -1) {
-                    p.then(function(resp) {
+                p.then(function(resp) {
+                    try {
                         var cloned = resp.clone();
                         cloned.json().then(function(data) {
-                            if (data && data.data && data.data.flightItineraryList) {
-                                window.__ctripFlightData = data.data.flightItineraryList;
-                                window.__ctripFetchDone = true;
-                            }
+                            tryCaptureJSON(data);
                         }).catch(function(){});
-                    });
-                }
+                    } catch(e) {}
+                }).catch(function(){});
                 return p;
             };
-            // Also intercept XHR (some Ctrip pages use XMLHttpRequest)
+
             var _origXHROpen = XMLHttpRequest.prototype.open;
             var _origXHRSend = XMLHttpRequest.prototype.send;
             XMLHttpRequest.prototype.open = function(method, url) {
-                this.__ctrip_url = url;
                 return _origXHROpen.apply(this, arguments);
             };
             XMLHttpRequest.prototype.send = function() {
                 var self = this;
-                var url = self.__ctrip_url || '';
                 this.addEventListener('load', function() {
-                    if (url.indexOf('batchSearch') !== -1 && url.indexOf('search/api/search') !== -1) {
-                        try {
-                            var data = JSON.parse(self.responseText);
-                            if (data && data.data && data.data.flightItineraryList) {
-                                window.__ctripFlightData = data.data.flightItineraryList;
-                                window.__ctripFetchDone = true;
-                            }
-                        } catch(e) {}
-                    }
+                    try {
+                        var data = JSON.parse(self.responseText);
+                        tryCaptureJSON(data);
+                    } catch(e) {}
                 });
                 return _origXHRSend.apply(this, arguments);
             };
@@ -383,12 +389,13 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
         # Navigate to trigger the API calls
         await cdp_send(ws, "Page.navigate", {"url": url})
 
-        # Wait for flight data (fast polling first 3s, then slower)
-        # Two strategies interleaved: check JS capture, and check Network domain
+        # Wait for flight data. Use adaptive wait: fast polling first, then check
+        # if page redirected to old Ctrip page (which loads slower as a Next.js SPA).
         flight_count = 0
         captured_itineraries = []
+        is_old_page = False
 
-        for i in range(12):
+        for i in range(18):
             await asyncio.sleep(0.5 if i < 6 else 1.0)
             try:
                 raw_len = await cdp_eval(
@@ -404,6 +411,16 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
                         break
             except Exception:
                 pass
+
+            # After 3s, check if page redirected to old Ctrip page
+            if i == 4 and not flight_count:
+                try:
+                    page_url = await cdp_eval(ws, "window.location.href", timeout=3)
+                    if "online/list" in str(page_url):
+                        is_old_page = True
+                        print(f"[Ctrip] Redirected to old page, waiting longer...")
+                except Exception:
+                    pass
 
         if not flight_count:
             # Diagnose what went wrong
@@ -449,8 +466,15 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
         return all_flights
 
     finally:
+        # Close page via CDP BEFORE disconnecting WebSocket
+        if own_ws and ws and page_id:
+            try:
+                await cdp_send(ws, "Page.close", timeout=5)
+            except Exception:
+                pass
         if own_ws and ws:
             await ws.close()
+        # Fallback: HTTP close (handles cases where CDP close failed)
         if own_ws and page_id:
             try:
                 urllib.request.urlopen(
@@ -548,9 +572,11 @@ async def search_qunar(origin_cn, dest_cn, date_str, ws_url=None, ws=None):
     print(f"[Qunar] {origin_cn}->{dest_cn} {date_str}")
 
     own_ws = False
+    page_id = None
     if ws is None:
         own_ws = True
         page_info = create_page_with_url(url)
+        page_id = page_info.get("id", "")
         ws_url = page_info["webSocketDebuggerUrl"]
         ws = await websockets.connect(ws_url, max_size=10 * 1024 * 1024)
 
@@ -587,8 +613,15 @@ async def search_qunar(origin_cn, dest_cn, date_str, ws_url=None, ws=None):
         return flights
 
     finally:
+        # Close page via CDP BEFORE disconnecting WebSocket
+        if own_ws and ws and page_id:
+            try:
+                await cdp_send(ws, "Page.close", timeout=5)
+            except Exception:
+                pass
         if own_ws and ws:
             await ws.close()
+        # Fallback: HTTP close (handles cases where CDP close failed)
         if own_ws and page_id:
             try:
                 urllib.request.urlopen(
