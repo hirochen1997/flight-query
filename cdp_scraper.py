@@ -501,10 +501,19 @@ async def search_qunar(origin_cn, dest_cn, date_str, ws_url=None, ws=None):
 
 
 def parse_qunar_dom(raw_text):
-    """Parse Qunar flight DOM text."""
-    lines = [l.strip() for l in raw_text.split("|") if l.strip()]
+    """Parse Qunar flight DOM text.
+
+    Text comes from innerText of div.b-airfly, with newlines replaced by ' | '.
+    Direct flight format:
+      九元航空 | AQ1019波音7M8(中) | 07:25 |  | 白云机场T2 |  | 3h5m | 10:30 |  | 胶东机场T1 |  | ¥ | 509 | ...
+    Connecting flight format:
+      中国国航 | CA1302空客350(大) | CA4680737-800共享 | 19:40 |  | 白云机场T3 |  | 停留10h55m | +1天 | 11:20 |  | 胶东机场 |  | 转北京 | ...
+    """
+    parts = [p.strip() for p in raw_text.split("|")]
+    has_next_day = "+1天" in raw_text
+
     f = {
-        "airline": lines[0] if lines else "",
+        "airline": parts[0] if parts else "",
         "flight_number": "",
         "aircraft": "",
         "departure_time": "",
@@ -518,35 +527,91 @@ def parse_qunar_dom(raw_text):
         "direct": True,
     }
 
-    fn_match = re.search(r"\b([A-Z]{2}\d{3,4}|[A-Z]\d{4,5})\b", raw_text)
-    if not fn_match:
-        fn_match = re.search(r"([A-Z]{2}\d{3,4})", raw_text)
-    if fn_match:
-        f["flight_number"] = fn_match.group(1)
+    # --- Flight number(s) and aircraft ---
+    # Pattern: "AQ1019波音7M8(中)" or "CA1302空客350(大)"
+    fn_aircraft_re = re.compile(r'([A-Z]{2}\d{3,4}|[A-Z]\d{4,5})(.*)')
+    flight_nums = []
+    aircrafts = []
 
-    times = re.findall(r"\b(\d{1,2}:\d{2})\b", raw_text)
+    for part in parts[1:4]:  # First 3 parts may contain flight info
+        m = fn_aircraft_re.match(part)
+        if m:
+            flight_nums.append(m.group(1))
+            rest = m.group(2).strip()
+            if rest and not rest.startswith(('0', '1', '2', '3', '4', '5', '6', '7', '8', '9')):
+                aircrafts.append(rest)
+            elif rest:
+                # "CA4680737-800共享" → second flight number "CA4680", aircraft "737-800共享"
+                m2 = fn_aircraft_re.match(rest)
+                if m2:
+                    flight_nums.append(m2.group(1))
+                    if m2.group(2).strip():
+                        aircrafts.append(m2.group(2).strip())
+                else:
+                    aircrafts.append(rest)
+            break  # Stop after first match
+
+    if flight_nums:
+        f["flight_number"] = flight_nums[0]
+    if aircrafts:
+        f["aircraft"] = aircrafts[0]
+    f["_all_flight_numbers"] = flight_nums
+
+    # --- Direct vs connecting ---
+    if len(flight_nums) > 1 or "停留" in raw_text or "转" in raw_text:
+        f["direct"] = False
+
+    # --- Times: first \d{2}:\d{2} is departure, last is arrival ---
+    times = re.findall(r'\b(\d{1,2}:\d{2})\b', raw_text)
     if len(times) >= 2:
         f["departure_time"] = times[0]
-        f["arrival_time"] = times[1]
+        f["arrival_time"] = times[-1]  # Last time in text is arrival
+        if has_next_day:
+            f["arrival_time"] += "+1"
 
-    airports = re.findall(r"([一-鿿]+机场T?\d*)", raw_text)
+    # --- Airports: Chinese names ending in 机场 ---
+    airports = re.findall(r'([一-鿿]+机场T?\d*)', raw_text)
     if len(airports) >= 2:
         f["depAirport"] = airports[0]
-        f["arrAirport"] = airports[1]
+        f["arrAirport"] = airports[-1]
 
-    dur_match = re.search(r"(\d+h\d+m?)", raw_text)
+    # --- Duration: "3h5m" for direct, "停留10小时55分钟" for layover ---
+    dur_match = re.search(r'(\d+h\d+m?)', raw_text)
     if dur_match:
         f["duration"] = dur_match.group(1)
+    else:
+        # Layover format: "停留10小时55分钟"
+        stay_match = re.search(r'停留(\d+)小时(\d+)分钟', raw_text)
+        if stay_match:
+            h, m = int(stay_match.group(1)), int(stay_match.group(2))
+            f["_layover_minutes"] = h * 60 + m
 
-    price_match = re.search(r"¥\s*\|\s*(\d+)", raw_text)
+    # If no direct duration but we have departure/arrival times, compute it
+    if not f["duration"] and f["departure_time"] and f["arrival_time"]:
+        dep_clean = f["departure_time"].replace("+1", "")
+        arr_clean = f["arrival_time"].replace("+1", "")
+        try:
+            dep_h, dep_m = map(int, dep_clean.split(":"))
+            arr_h, arr_m = map(int, arr_clean.split(":"))
+            total_mins = arr_h * 60 + arr_m - (dep_h * 60 + dep_m)
+            if has_next_day:
+                total_mins += 24 * 60
+            if total_mins > 0:
+                f["duration"] = f"{total_mins // 60}h{total_mins % 60}m"
+        except (ValueError, AttributeError):
+            pass
+
+    # --- Price: ¥ | 509 or ¥509 ---
+    price_match = re.search(r'¥\s*\|\s*(\d+)', raw_text)
     if not price_match:
-        price_match = re.search(r"¥\s*(\d+)", raw_text)
+        price_match = re.search(r'¥\s*(\d+)', raw_text)
     if price_match:
         p = int(price_match.group(1))
         if 10 < p < 100000:
             f["price"] = p
 
-    disc_match = re.search(r"([\d.]+折)", raw_text)
+    # --- Discount: "2.3折" ---
+    disc_match = re.search(r'([\d.]+折)', raw_text)
     if disc_match:
         f["discount"] = disc_match.group(1)
 
