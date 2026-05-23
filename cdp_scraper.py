@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""CDP-based flight scraper using Ctrip/Qunar internal APIs via fetch interception.
+"""CDP-based flight scraper using Ctrip internal API via fetch interception.
 
-Connects to Chrome running with --remote-debugging-port=9222.
-Uses Page.addScriptToEvaluateOnNewDocument to intercept API responses
+Connects to dedicated headless Chrome on port 9223 (separate from user's Chrome).
+Uses Page.addScriptToEvaluateOnNewDocument to intercept batchSearch API responses
 before the SPA loads, capturing complete structured flight data.
 
 Usage:
-    python3 cdp_scraper.py <origin_city> <dest_city> <date> [--platform ctrip,qunar] [--json]
+    python3 cdp_scraper.py <origin_city> <dest_city> <date> [--platform ctrip] [--json]
     python3 cdp_scraper.py 北京 上海 2026-06-20
 """
+
+CDP_PORT = 9223  # Dedicated headless Chrome, NOT the user's Chrome on 9222
 
 import asyncio
 import json
@@ -94,19 +96,19 @@ async def cdp_eval(ws, expression, timeout=15):
 
 
 def create_blank_page():
-    """Create a blank CDP tab, return its info dict."""
+    """Create a blank CDP tab on dedicated headless Chrome, return its info dict."""
     raw = subprocess.check_output(
-        ["curl", "-s", "-X", "PUT", "http://localhost:9222/json/new?about:blank"],
+        ["curl", "-s", "-X", "PUT", f"http://localhost:{CDP_PORT}/json/new?about:blank"],
         text=True,
     )
     return json.loads(raw)
 
 
 def create_page_with_url(url):
-    """Create a CDP tab navigating to the given URL, return its info dict."""
+    """Create a CDP tab on dedicated headless Chrome, return its info dict."""
     encoded = urllib.parse.quote(url, safe="")
     raw = subprocess.check_output(
-        ["curl", "-s", "-X", "PUT", f"http://localhost:9222/json/new?{encoded}"],
+        ["curl", "-s", "-X", "PUT", f"http://localhost:{CDP_PORT}/json/new?{encoded}"],
         text=True,
     )
     return json.loads(raw)
@@ -303,31 +305,31 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
         # Navigate to trigger the API calls
         await cdp_send(ws, "Page.navigate", {"url": url})
 
-        # Wait for flight data to be captured (up to 60s)
+        # Wait for flight data (fast polling first 3s, then slower)
         flight_data = None
-        for i in range(30):
-            await asyncio.sleep(2)
+        for i in range(10):
+            await asyncio.sleep(0.5 if i < 6 else 1.0)
             try:
                 raw_len = await cdp_eval(
                     ws,
                     "window.__ctripFlightData ? window.__ctripFlightData.length : 0",
-                    timeout=5,
+                    timeout=3,
                 )
                 if raw_len and raw_len > 0:
-                    print(f"[Ctrip] API captured: {raw_len} itinerary items")
+                    elapsed = (i + 1) * 0.5 if i < 6 else 3 + (i - 5) * 1.0
+                    print(f"[Ctrip] API captured: {raw_len} itinerary items ({elapsed:.1f}s)")
                     flight_data = raw_len
                     break
             except Exception:
                 pass
 
         if not flight_data:
-            print("[Ctrip] No API response captured after 60s, falling back to DOM")
-            return await search_ctrip_dom(ws, origin_iata, dest_iata, date_str)
+            print("[Ctrip] No API response captured after 8s")
 
-        # Extract flight data in batches to avoid CDP size limits.
-        # Each itinerary is ~40KB, we fetch them one at a time.
+        # Extract flight data in larger batches to reduce CDP round-trips.
+        # Each itinerary is ~40KB, CDP messages support up to ~10MB.
         all_flights = []
-        batch_size = 10
+        batch_size = 50
         for offset in range(0, flight_data, batch_size):
             expr = (
                 f"(function() {{"
@@ -373,8 +375,8 @@ async def search_ctrip_dom(ws, origin_iata, dest_iata, date_str):
     """Fallback: DOM-based Ctrip scraping."""
     await cdp_send(ws, "Page.navigate", {"url": f"https://flights.ctrip.com/itinerary/oneway/{origin_iata.lower()}-{dest_iata.lower()}?date={date_str}"})
 
-    for i in range(15):
-        await asyncio.sleep(2)
+    for i in range(8):
+        await asyncio.sleep(1)
         try:
             count = await cdp_eval(ws, "document.querySelectorAll('.flight-item').length", timeout=5)
             if count:
@@ -631,7 +633,7 @@ async def search_tongcheng(origin_cn, dest_cn, date_str, ws_url=None, ws=None):
 async def search_all(origin_cn, dest_cn, date_str, platforms=None):
     """Search all platforms or specified ones. Returns dict of platform -> flights."""
     if platforms is None:
-        platforms = ["ctrip", "qunar"]
+        platforms = ["ctrip"]  # Qunar skipped: unreliable DOM scraping + slow
 
     origin_cn = resolve_city_name(origin_cn)
     dest_cn = resolve_city_name(dest_cn)
@@ -668,7 +670,7 @@ async def main():
     origin = sys.argv[1]
     dest = sys.argv[2]
     date_str = sys.argv[3]
-    platforms = ["ctrip", "qunar"]
+    platforms = ["ctrip"]  # Qunar skipped: unreliable DOM + slow (40s+)
     json_output = False
 
     for arg in sys.argv[4:]:

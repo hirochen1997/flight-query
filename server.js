@@ -18,6 +18,40 @@ const FLYCLAW_DIR = '/tmp/FlyClaw';
 const PYTHON = 'python3';
 
 app.use(cors());
+
+// ---- Headless Chrome lifecycle (dedicated scraper browser on port 9223) ----
+const CDP_PORT = 9223;
+async function ensureHeadlessChrome() {
+  try {
+    await fetch(`http://localhost:${CDP_PORT}/json/version`);
+    console.log(`Headless Chrome already running on port ${CDP_PORT}`);
+  } catch {
+    console.log(`Launching headless Chrome on port ${CDP_PORT}...`);
+    spawn(
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      [
+        '--headless=new',
+        `--remote-debugging-port=${CDP_PORT}`,
+        '--user-data-dir=/tmp/chrome_scraper_profile',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-blink-features=AutomationControlled',
+        '--window-size=1920,1080',
+      ],
+      { detached: true, stdio: 'ignore' }
+    ).unref();
+    // Wait for Chrome to start
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        await fetch(`http://localhost:${CDP_PORT}/json/version`);
+        console.log('Headless Chrome started');
+        return;
+      } catch {}
+    }
+    console.warn('Warning: Headless Chrome failed to start, Ctrip search may not work');
+  }
+}
 app.use(express.json());
 
 // Static files (local dev only — Netlify serves public/ natively)
@@ -239,7 +273,7 @@ function cdpScraperSearch(params) {
     const proc = spawn(PYTHON, args, {
       cwd: __dirname,
       env: { ...process.env, NO_PROXY: 'localhost,127.0.0.1,::1', PYTHONIOENCODING: 'utf-8' },
-      timeout: 180000,
+      timeout: 30000,
     });
 
     let stdout = '';
@@ -773,9 +807,10 @@ app.get('*', (req, res) => {
 
 // Only listen when running as standalone server
 if (!process.env.NETLIFY) {
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`Flight Query Server running at http://localhost:${PORT}`);
-    console.log('Data source: Fliggy MCP (Node.js) + Ctrip/Qunar (Chrome CDP)');
+    console.log('Data source: Fliggy MCP (Node.js) + Ctrip (headless Chrome CDP)');
+    await ensureHeadlessChrome();
   });
 }
 
