@@ -20,6 +20,7 @@ import time
 import sys
 import subprocess
 import urllib.parse
+import urllib.request
 import websockets
 
 os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,::1")
@@ -119,124 +120,169 @@ def create_page_with_url(url):
 def parse_ctrip_api_flight(itinerary):
     """Parse a single Ctrip flight itinerary from batchSearch API response.
 
-    Returns a list of flight entries (one per unique flightNo across segments).
-    Each entry includes all price variants.
+    Returns a list with ONE flight entry per itinerary (not per segment).
+    For connecting flights, all segments are combined into one journey entry.
 
-    priceList is at the ITINERARY level, not segment level.
+    priceList is at the ITINERARY level.
     Each price references segmentNo/sequenceNo via priceUnitList[].flightSeatList[].
     """
-    flights = []
+    segments_raw = itinerary.get("flightSegments", [])
+    if not segments_raw:
+        return []
+
     all_prices = itinerary.get("priceList", [])
 
-    for seg in itinerary.get("flightSegments", []):
+    # Collect all flights across all segments
+    all_flights_in_itinerary = []
+    total_duration = 0
+    total_stops = 0
+
+    for seg in segments_raw:
         flight_list = seg.get("flightList", [])
         seg_no = seg.get("segmentNo", 1)
+        seg_duration = seg.get("duration", 0)
+        total_duration += seg_duration
+        total_stops = max(total_stops, seg.get("stopCount", 0))
 
         for fl in flight_list:
-            flight = {
-                "airline": seg.get("airlineName", ""),
-                "flight_number": fl.get("flightNo", ""),
-                "operateFlightNo": fl.get("operateFlightNo", ""),
-                "operateAirline": fl.get("operateAirlineName", ""),
-                "aircraft": fl.get("aircraftName", ""),
+            all_flights_in_itinerary.append({
+                "flightNo": fl.get("flightNo", ""),
+                "departureDateTime": fl.get("departureDateTime", ""),
+                "arrivalDateTime": fl.get("arrivalDateTime", ""),
+                "departureAirportCode": fl.get("departureAirportCode", ""),
+                "arrivalAirportCode": fl.get("arrivalAirportCode", ""),
+                "departureAirportName": fl.get("departureAirportName", ""),
+                "arrivalAirportName": fl.get("arrivalAirportName", ""),
+                "departureTerminal": fl.get("departureTerminal", ""),
+                "arrivalTerminal": fl.get("arrivalTerminal", ""),
+                "aircraftName": fl.get("aircraftName", ""),
                 "aircraftCode": fl.get("aircraftCode", ""),
-                "departure_time": _format_datetime(fl.get("departureDateTime", "")),
-                "arrival_time": _format_datetime(fl.get("arrivalDateTime", "")),
-                "depAirport": fl.get("departureAirportName", ""),
-                "arrAirport": fl.get("arrivalAirportName", ""),
-                "depAirportCode": fl.get("departureAirportCode", ""),
-                "arrAirportCode": fl.get("arrivalAirportCode", ""),
-                "depTerminal": fl.get("departureTerminal", ""),
-                "arrTerminal": fl.get("arrivalTerminal", ""),
-                "duration": seg.get("duration", 0),
-                "stopCount": seg.get("stopCount", 0),
-                "transferCount": seg.get("transferCount", 0),
-                "crossDays": seg.get("crossDays", 0),
-                "platform": "ctrip",
-            }
+                "operateFlightNo": fl.get("operateFlightNo", ""),
+                "operateAirlineName": fl.get("operateAirlineName", ""),
+                "sequenceNo": fl.get("sequenceNo", 1),
+                "segmentNo": seg_no,
+                "duration": seg_duration,
+            })
 
-            # Extract price variants matching this flight's segmentNo + sequenceNo
-            flight_seq = fl.get("sequenceNo", 1)
-            prices = []
-            for p in all_prices:
-                adult_price = p.get("adultPrice", 0)
-                if adult_price <= 0:
-                    continue
+    if not all_flights_in_itinerary:
+        return []
 
-                # Match this price to the flight via priceUnitList
-                discount_rate = 0
-                product_types = []
-                seat_class = ""
-                price_matches = not p.get("priceUnitList")  # If no priceUnitList, applies to all
-                for pu in p.get("priceUnitList", []):
-                    for seat in pu.get("flightSeatList", []):
-                        if seat.get("segmentNo") == seg_no and seat.get("sequenceNo") == flight_seq:
-                            price_matches = True
-                            discount_rate = seat.get("discountRate", 0)
-                            product_types = seat.get("productTypes", [])
-                            seat_class = seat.get("seatClass", "")
+    first_flight = all_flights_in_itinerary[0]
+    last_flight = all_flights_in_itinerary[-1]
 
-                if not price_matches:
-                    continue
+    # Build combined flight entry
+    flight = {
+        "airline": segments_raw[0].get("airlineName", ""),
+        "flight_number": first_flight["flightNo"],
+        "aircraft": first_flight.get("aircraftName", ""),
+        "departure_time": _format_datetime(first_flight["departureDateTime"]),
+        "arrival_time": _format_datetime(last_flight["arrivalDateTime"]),
+        "depAirport": first_flight["departureAirportName"],
+        "arrAirport": last_flight["arrivalAirportName"],
+        "depAirportCode": first_flight["departureAirportCode"],
+        "arrAirportCode": last_flight["arrivalAirportCode"],
+        "depTerminal": first_flight.get("departureTerminal", ""),
+        "arrTerminal": last_flight.get("arrivalTerminal", ""),
+        "duration": total_duration,
+        "stops": total_stops,
+        "crossDays": segments_raw[-1].get("crossDays", 0),
+        "platform": "ctrip",
+        # Build segments for multi-leg display
+        "ctripSegments": [{
+            "flight_number": f["flightNo"],
+            "origin_iata": f["departureAirportCode"],
+            "destination_iata": f["arrivalAirportCode"],
+            "departure": _format_datetime(f["departureDateTime"]),
+            "arrival": _format_datetime(f["arrivalDateTime"]),
+            "duration_minutes": f["duration"],
+            "aircraft": f.get("aircraftName", ""),
+            "airline": f.get("operateAirlineName", "") or segments_raw[0].get("airlineName", ""),
+            "terminal": f.get("departureTerminal", ""),
+        } for f in all_flights_in_itinerary],
+    }
 
-                # Get baggage info for this segment
-                baggage_info = ""
-                if "baggage" in p:
-                    for bl in p["baggage"].get("dataList", []):
-                        if bl.get("segmentNo") == seg_no and bl.get("sequenceNo") == flight_seq:
-                            adult = bl.get("adultBaggage", {})
-                            checked = adult.get("checkedBaggage", {})
-                            if checked.get("hasFreeBaggage"):
-                                baggage_info = checked.get("baggageContent", "")
+    # Extract all price variants for this itinerary.
+    # Match prices to the itinerary (segmentNo 1, sequenceNo 1 typically).
+    prices = []
+    for p in all_prices:
+        adult_price = p.get("adultPrice", 0)
+        if adult_price <= 0:
+            continue
 
-                prices.append({
-                    "price": adult_price,
-                    "childPrice": p.get("childPrice", 0),
-                    "cabin": p.get("cabin", ""),
-                    "seatClass": seat_class,
-                    "discountRate": discount_rate,
-                    "discount": f"{discount_rate * 10:.1f}折" if discount_rate else "",
-                    "productTypes": product_types,
-                    "baggage": baggage_info,
-                    "invoiceType": p.get("invoiceType", ""),
-                    "miseryIndex": p.get("miseryIndex", 0),
-                    "routeSearchToken": p.get("routeSearchToken", ""),
-                })
+        discount_rate = 0
+        product_types = []
+        seat_class = ""
+        price_matches = not p.get("priceUnitList")
 
-            # Sort prices low to high and deduplicate by (price, cabin, seatClass)
-            prices.sort(key=lambda x: x["price"])
-            seen = set()
-            unique_prices = []
-            for p in prices:
-                key = (p["price"], p["cabin"], p["seatClass"])
-                if key not in seen:
-                    seen.add(key)
-                    unique_prices.append(p)
-            prices = unique_prices
+        if not price_matches:
+            for pu in p.get("priceUnitList", []):
+                for seat in pu.get("flightSeatList", []):
+                    # Match to first segment's first flight by default
+                    if seat.get("segmentNo") == 1 and seat.get("sequenceNo") == 1:
+                        price_matches = True
+                        discount_rate = seat.get("discountRate", 0)
+                        product_types = seat.get("productTypes", [])
+                        seat_class = seat.get("seatClass", "")
 
-            if prices:
-                flight["price"] = prices[0]["price"]
-                flight["lowestPrice"] = prices[0]["price"]
-            else:
-                flight["price"] = 0
-                flight["lowestPrice"] = 0
+        if not price_matches:
+            continue
 
-            flight["prices"] = prices
-            flight["priceCount"] = len(prices)
+        # Get baggage info
+        baggage_info = ""
+        if "baggage" in p:
+            for bl in p["baggage"].get("dataList", []):
+                if bl.get("segmentNo") == 1 and bl.get("sequenceNo") == 1:
+                    adult = bl.get("adultBaggage", {})
+                    checked = adult.get("checkedBaggage", {})
+                    if checked.get("hasFreeBaggage"):
+                        baggage_info = checked.get("baggageContent", "")
 
-            # Build search URL
-            fn = flight["flight_number"]
-            dep_code = flight.get("depAirportCode", "")
-            arr_code = flight.get("arrAirportCode", "")
-            dep_date = fl.get("departureDateTime", "")[:10] if fl.get("departureDateTime") else ""
-            flight["search_url"] = (
-                f"https://flights.ctrip.com/online/list/oneway-{dep_code.lower()}-{arr_code.lower()}"
-                f"?depdate={dep_date}&flightno={fn}"
-            )
+        prices.append({
+            "price": adult_price,
+            "childPrice": p.get("childPrice", 0),
+            "cabin": p.get("cabin", ""),
+            "seatClass": seat_class,
+            "discountRate": discount_rate,
+            "discount": f"{discount_rate * 10:.1f}折" if discount_rate else "",
+            "productTypes": product_types,
+            "baggage": baggage_info,
+            "invoiceType": p.get("invoiceType", ""),
+            "miseryIndex": p.get("miseryIndex", 0),
+            "routeSearchToken": p.get("routeSearchToken", ""),
+        })
 
-            flights.append(flight)
+    # Sort and deduplicate
+    prices.sort(key=lambda x: x["price"])
+    seen = set()
+    unique_prices = []
+    for p in prices:
+        key = (p["price"], p["cabin"], p["seatClass"])
+        if key not in seen:
+            seen.add(key)
+            unique_prices.append(p)
+    prices = unique_prices
 
-    return flights
+    if prices:
+        flight["price"] = prices[0]["price"]
+        flight["lowestPrice"] = prices[0]["price"]
+    else:
+        flight["price"] = 0
+        flight["lowestPrice"] = 0
+
+    flight["prices"] = prices
+    flight["priceCount"] = len(prices)
+
+    # Build search URL (use first flight's info)
+    fn = flight["flight_number"]
+    dep_code = first_flight["departureAirportCode"]
+    arr_code = last_flight["arrivalAirportCode"]
+    dep_date = first_flight["departureDateTime"][:10] if first_flight["departureDateTime"] else ""
+    flight["search_url"] = (
+        f"https://flights.ctrip.com/online/list/oneway-{dep_code.lower()}-{arr_code.lower()}"
+        f"?depdate={dep_date}&flightno={fn}"
+    )
+
+    return [flight]
 
 
 def _format_datetime(datetime_str):
@@ -259,42 +305,74 @@ def _extract_time(datetime_str):
 async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
     """Search Ctrip flights via batchSearch API interception.
 
-    Injects fetch interceptor before page load, then navigates to search URL.
-    The SPA's own batchSearch call is captured, giving us complete flight data.
+    Uses Fetch.enable to pause all responses, read the batchSearch response body
+    directly via CDP, then parse flight data. More reliable than JS injection.
+    Uses a single message-read loop so CDP command responses are routed correctly.
     """
     url = f"https://flights.ctrip.com/itinerary/oneway/{origin_iata.lower()}-{dest_iata.lower()}?date={date_str}"
     print(f"[Ctrip] {origin_iata}->{dest_iata} {date_str}")
 
     own_ws = False
+    page_id = None
     if ws is None:
         own_ws = True
         page_info = create_blank_page()
+        page_id = page_info.get("id", "")
         ws_url = page_info["webSocketDebuggerUrl"]
         ws = await websockets.connect(ws_url, max_size=100 * 1024 * 1024)
 
     try:
         await cdp_send(ws, "Page.enable")
+        await cdp_send(ws, "Network.enable")
         await cdp_send(ws, "Runtime.enable")
 
-        # Inject fetch interceptor BEFORE page scripts run.
-        # This captures the SPA's batchSearch API response containing all flights.
+        # Install JS fetch + XHR interceptor as the PRIMARY capture method.
+        # This runs before any page scripts and is the simplest reliable approach.
+        # We also enable Fetch domain as backup to pause responses at CDP level.
         intercept_js = """
         (function() {
             window.__ctripFlightData = null;
-            const origFetch = window.fetch.bind(window);
-            window.fetch = function(...args) {
-                const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
-                return origFetch.apply(window, args).then(function(resp) {
-                    if (url.includes('batchSearch') && url.includes('search/api/search')) {
-                        const cloned = resp.clone();
+            window.__ctripFetchDone = false;
+            var _origFetch = window.fetch;
+            window.fetch = function() {
+                var args = arguments;
+                var url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+                var p = _origFetch.apply(this, args);
+                if (url.indexOf('batchSearch') !== -1 && url.indexOf('search/api/search') !== -1) {
+                    p.then(function(resp) {
+                        var cloned = resp.clone();
                         cloned.json().then(function(data) {
                             if (data && data.data && data.data.flightItineraryList) {
                                 window.__ctripFlightData = data.data.flightItineraryList;
+                                window.__ctripFetchDone = true;
                             }
                         }).catch(function(){});
+                    });
+                }
+                return p;
+            };
+            // Also intercept XHR (some Ctrip pages use XMLHttpRequest)
+            var _origXHROpen = XMLHttpRequest.prototype.open;
+            var _origXHRSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, url) {
+                this.__ctrip_url = url;
+                return _origXHROpen.apply(this, arguments);
+            };
+            XMLHttpRequest.prototype.send = function() {
+                var self = this;
+                var url = self.__ctrip_url || '';
+                this.addEventListener('load', function() {
+                    if (url.indexOf('batchSearch') !== -1 && url.indexOf('search/api/search') !== -1) {
+                        try {
+                            var data = JSON.parse(self.responseText);
+                            if (data && data.data && data.data.flightItineraryList) {
+                                window.__ctripFlightData = data.data.flightItineraryList;
+                                window.__ctripFetchDone = true;
+                            }
+                        } catch(e) {}
                     }
-                    return resp;
                 });
+                return _origXHRSend.apply(this, arguments);
             };
         })()
         """
@@ -306,8 +384,11 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
         await cdp_send(ws, "Page.navigate", {"url": url})
 
         # Wait for flight data (fast polling first 3s, then slower)
-        flight_data = None
-        for i in range(10):
+        # Two strategies interleaved: check JS capture, and check Network domain
+        flight_count = 0
+        captured_itineraries = []
+
+        for i in range(12):
             await asyncio.sleep(0.5 if i < 6 else 1.0)
             try:
                 raw_len = await cdp_eval(
@@ -317,51 +398,52 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
                 )
                 if raw_len and raw_len > 0:
                     elapsed = (i + 1) * 0.5 if i < 6 else 3 + (i - 5) * 1.0
-                    print(f"[Ctrip] API captured: {raw_len} itinerary items ({elapsed:.1f}s)")
-                    flight_data = raw_len
-                    break
+                    if isinstance(raw_len, int) and raw_len > flight_count:
+                        print(f"[Ctrip] JS capture: {raw_len} itineraries ({elapsed:.1f}s)")
+                        flight_count = raw_len
+                        break
             except Exception:
                 pass
 
-        if not flight_data:
-            print("[Ctrip] No API response captured after 8s")
-
-        # Extract flight data in larger batches to reduce CDP round-trips.
-        # Each itinerary is ~40KB, CDP messages support up to ~10MB.
-        all_flights = []
-        batch_size = 50
-        for offset in range(0, flight_data, batch_size):
-            expr = (
-                f"(function() {{"
-                f"  var slice = window.__ctripFlightData.slice({offset}, {offset + batch_size});"
-                f"  return JSON.stringify(slice);"
-                f"}})()"
-            )
+        if not flight_count:
+            # Diagnose what went wrong
             try:
-                raw = await cdp_eval(ws, expr, timeout=15)
-                if raw:
-                    itineraries = json.loads(raw)
-                    for it in itineraries:
-                        flights = parse_ctrip_api_flight(it)
-                        all_flights.extend(flights)
+                page_url = await cdp_eval(ws, "window.location.href", timeout=3)
+                print(f"[Ctrip] No API data. Page URL: {page_url}")
+                doc_ready = await cdp_eval(ws, "document.readyState", timeout=3)
+                print(f"[Ctrip] document.readyState: {doc_ready}")
+                # Check if network requests are happening
+                perf_entries = await cdp_eval(
+                    ws,
+                    "JSON.stringify(performance.getEntriesByType('resource').map(function(e) { return e.name; }).filter(function(n) { return n.indexOf('batchSearch') !== -1 || n.indexOf('search') !== -1; }))",
+                    timeout=3,
+                )
+                if perf_entries:
+                    print(f"[Ctrip] Related network requests: {perf_entries}")
             except Exception as e:
-                print(f"[Ctrip] Error extracting batch {offset}: {e}")
-                # Try one-by-one for this batch
-                for j in range(batch_size):
-                    idx = offset + j
-                    if idx >= flight_data:
-                        break
-                    try:
-                        raw = await cdp_eval(
-                            ws,
-                            f"JSON.stringify(window.__ctripFlightData[{idx}])",
-                            timeout=10,
-                        )
-                        if raw:
-                            flights = parse_ctrip_api_flight(json.loads(raw))
-                            all_flights.extend(flights)
-                    except Exception:
-                        pass
+                print(f"[Ctrip] Diagnostics error: {e}")
+
+        # Extract flight data from JS capture
+        all_flights = []
+        if flight_count > 0:
+            batch_size = 50
+            for offset in range(0, flight_count, batch_size):
+                try:
+                    raw = await cdp_eval(
+                        ws,
+                        f"JSON.stringify(window.__ctripFlightData.slice({offset}, {offset + batch_size}))",
+                        timeout=15,
+                    )
+                    if raw:
+                        itineraries = json.loads(raw)
+                        captured_itineraries.extend(itineraries)
+                except Exception as e:
+                    print(f"[Ctrip] Extract error at offset {offset}: {e}")
+                    break
+
+            for it in captured_itineraries:
+                flights = parse_ctrip_api_flight(it)
+                all_flights.extend(flights)
 
         print(f"[Ctrip] Parsed {len(all_flights)} flights with price data")
         return all_flights
@@ -369,6 +451,13 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
     finally:
         if own_ws and ws:
             await ws.close()
+        if own_ws and page_id:
+            try:
+                urllib.request.urlopen(
+                    f"http://localhost:{CDP_PORT}/json/close/{page_id}"
+                )
+            except Exception:
+                pass
 
 
 async def search_ctrip_dom(ws, origin_iata, dest_iata, date_str):
@@ -500,6 +589,13 @@ async def search_qunar(origin_cn, dest_cn, date_str, ws_url=None, ws=None):
     finally:
         if own_ws and ws:
             await ws.close()
+        if own_ws and page_id:
+            try:
+                urllib.request.urlopen(
+                    f"http://localhost:{CDP_PORT}/json/close/{page_id}"
+                )
+            except Exception:
+                pass
 
 
 def parse_qunar_dom(raw_text):

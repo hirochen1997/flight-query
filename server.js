@@ -545,6 +545,19 @@ function mergeFlightsByNumber(fliggyFlights, otaResults, date) {
       if (!merged[key].flight_number || merged[key].flight_number === key) {
         if (f.flight_number) merged[key].flight_number = f.flight_number;
       }
+      // Merge Ctrip multi-segment itinerary data
+      if (f.ctripSegments && f.ctripSegments.length > 0 && (!merged[key].segments || merged[key].segments.length === 0)) {
+        merged[key].segments = f.ctripSegments.map(seg => ({
+          flight_number: seg.flight_number,
+          origin_iata: seg.origin_iata,
+          destination_iata: seg.destination_iata,
+          departure: seg.departure,
+          arrival: seg.arrival,
+          duration_minutes: seg.duration_minutes,
+          aircraft_type: seg.aircraft || '',
+          terminal: seg.terminal || '',
+        }));
+      }
     }
   }
 
