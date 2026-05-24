@@ -219,7 +219,6 @@ app.post('/api/search', async (req, res) => {
         platformLabels,
         bestPricePlatform: f.best_price_platform,
         platformCount: platformPrices.length,
-        bookingLink: f.booking_urls[f.best_price_platform] || null,
         searchLinks: platformPrices.map(p => ({
           name: platformLabels[p.platform] || p.platform,
           platform: p.platform,

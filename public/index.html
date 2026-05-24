@@ -525,30 +525,29 @@
   .btn-buy {
     display:inline-flex; align-items:center; gap:8px;
     padding: 10px 22px; border-radius:8px;
-    border: 1px solid rgba(255,107,53,0.4);
-    background: rgba(255,107,53,0.08);
+    border: 1px solid var(--border);
+    background: transparent;
     font-family: var(--font-display); font-size:12px; font-weight:600;
-    color: var(--amber); text-decoration:none;
+    color: var(--text-dim); text-decoration:none;
     transition:all 0.25s; letter-spacing:1px;
-    box-shadow: 0 0 16px rgba(255,107,53,0.1);
   }
   .btn-buy:hover {
-    border-color:var(--amber);
-    background: rgba(255,107,53,0.15);
-    box-shadow: 0 0 24px rgba(255,107,53,0.2);
-    transform: translateY(-1px);
-  }
-  .btn-buy-secondary {
-    border-color: var(--border);
-    background: transparent;
-    color: var(--text-dim);
-    box-shadow: none;
-    font-size:11px; padding:8px 16px;
-  }
-  .btn-buy-secondary:hover {
     border-color: var(--cyan);
     color: var(--text-bright);
     box-shadow: 0 0 12px rgba(0,240,255,0.08);
+    transform: translateY(-1px);
+  }
+  .btn-buy-primary {
+    border: 1px solid rgba(255,107,53,0.4);
+    background: rgba(255,107,53,0.08);
+    color: var(--amber);
+    box-shadow: 0 0 16px rgba(255,107,53,0.1);
+  }
+  .btn-buy-primary:hover {
+    border-color:var(--amber);
+    background: rgba(255,107,53,0.15);
+    box-shadow: 0 0 24px rgba(255,107,53,0.2);
+    color: var(--amber);
   }
 
   /* ============ STATE PANELS ============ */
@@ -991,6 +990,8 @@ async function searchFlights() {
     // Update HUD with source status
     if (data.meta?.allSources) updateHud(data.meta.allSources);
 
+    playSearchComplete();
+
     if (allFlights.length === 0) {
       document.getElementById('stateArea').innerHTML = `
         <div class="empty-state">
@@ -1021,6 +1022,26 @@ function showError(msg) {
       <div class="state-title">搜索异常</div>
       <div class="state-desc">${msg}</div>
     </div>`;
+}
+
+// ============ NOTIFICATION SOUND ============
+function playSearchComplete() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const t = ctx.currentTime;
+    const notes = [880, 1100, 1320]; // A5, C#6, E6 — bright ascending triad
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, t + i * 0.1);
+      gain.gain.linearRampToValueAtTime(0.15, t + i * 0.1 + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + i * 0.1 + 0.3);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t + i * 0.1); osc.stop(t + i * 0.1 + 0.3);
+    });
+  } catch {}
 }
 
 // ============ SORTING ============
@@ -1111,12 +1132,8 @@ function renderFlights() {
             `).join('')}
           </div>
           <div class="booking-links">
-            ${f.bookingLink ? `
-              <a href="${esc(f.bookingLink)}" target="_blank" class="btn-buy" onclick="event.stopPropagation()">
-                &#9654; 立即购票 (${f.platformLabels[f.bestPricePlatform]||'飞猪'})
-              </a>` : ''}
             ${(f.searchLinks||[]).map(l => `
-              <a href="${esc(l.url)}" target="_blank" class="btn-buy btn-buy-secondary" onclick="event.stopPropagation()">
+              <a href="${esc(l.url)}" target="_blank" class="btn-buy${l.isDirectBook?' btn-buy-primary':''}" onclick="event.stopPropagation()">
                 ${l.isDirectBook?'&#9654;':'&#8981;'} ${esc(l.name)}${l.isDirectBook?' 直接购票':(l.isTargetedSearch?' 指定搜索':' 搜索比价')}
               </a>
             `).join('')}
