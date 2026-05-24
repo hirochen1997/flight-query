@@ -309,8 +309,8 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
     directly via CDP, then parse flight data. More reliable than JS injection.
     Uses a single message-read loop so CDP command responses are routed correctly.
     """
-    url = f"https://flights.ctrip.com/itinerary/oneway/{origin_iata.lower()}-{dest_iata.lower()}?date={date_str}"
-    print(f"[Ctrip] {origin_iata}->{dest_iata} {date_str}")
+    url = f"https://flights.ctrip.com/international/search/oneway/{origin_iata.lower()}-{dest_iata.lower()}?depdate={date_str}"
+    print(f"[Ctrip] {origin_iata}->{dest_iata} {date_str} (URL: {url})")
 
     own_ws = False
     page_id = None
@@ -326,13 +326,8 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
         await cdp_send(ws, "Network.enable")
         await cdp_send(ws, "Runtime.enable")
 
-        # Clear browser cache and cookies to prevent Ctrip from
-        # redirecting to the old page based on prior session state.
-        try:
-            await cdp_send(ws, "Network.clearBrowserCache", timeout=5)
-            await cdp_send(ws, "Network.clearBrowserCookies", timeout=5)
-        except Exception:
-            pass
+        # Skip cache/cookie clearing — it can trigger Ctrip to redirect
+        # to the old Next.js SPA page instead of the new API-driven page.
 
         # Install JS fetch + XHR interceptor to capture flightItineraryList
         # from ANY API response, regardless of which Ctrip page version loads.
@@ -340,6 +335,7 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
         (function() {
             window.__ctripFlightData = null;
             window.__ctripFetchDone = false;
+            window.__ctripApiRequests = [];
 
             function tryCaptureJSON(obj) {
                 if (!obj || !obj.data || !obj.data.flightItineraryList) return;
@@ -350,10 +346,44 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
                 }
             }
 
+            function recordRequest(method, url, body, headers) {
+                window.__ctripApiRequests.push({
+                    method: method,
+                    url: url,
+                    body: body || null,
+                    headers: headers || null,
+                    timestamp: Date.now()
+                });
+            }
+
             var _origFetch = window.fetch;
-            window.fetch = function() {
+            window.fetch = function(url, options) {
+                var reqUrl = typeof url === 'string' ? url : (url.url || '');
+                var reqBody = (options && options.body) || null;
+                var reqHeaders = (options && options.headers) || null;
+                // Try to capture headers
+                var headersObj = null;
+                if (reqHeaders) {
+                    try {
+                        if (reqHeaders instanceof Headers) {
+                            headersObj = {};
+                            reqHeaders.forEach(function(v,k) { headersObj[k] = v; });
+                        } else {
+                            headersObj = reqHeaders;
+                        }
+                    } catch(e) {}
+                }
+                recordRequest('fetch', reqUrl, reqBody, headersObj);
                 var args = arguments;
                 var p = _origFetch.apply(this, args);
+                if (reqUrl.indexOf('batchSearch') !== -1) {
+                    p.then(function(resp) {
+                        var cloned = resp.clone();
+                        cloned.text().then(function(text) {
+                            window.__ctripBatchSearchResponse = text.substring(0, 3000);
+                        }).catch(function(){});
+                    }).catch(function(){});
+                }
                 p.then(function(resp) {
                     try {
                         var cloned = resp.clone();
@@ -368,9 +398,12 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
             var _origXHROpen = XMLHttpRequest.prototype.open;
             var _origXHRSend = XMLHttpRequest.prototype.send;
             XMLHttpRequest.prototype.open = function(method, url) {
+                this.__xhrMethod = method;
+                this.__xhrUrl = url;
                 return _origXHROpen.apply(this, arguments);
             };
-            XMLHttpRequest.prototype.send = function() {
+            XMLHttpRequest.prototype.send = function(body) {
+                recordRequest(this.__xhrMethod || 'POST', this.__xhrUrl || '', body);
                 var self = this;
                 this.addEventListener('load', function() {
                     try {
@@ -463,6 +496,40 @@ async def search_ctrip(origin_iata, dest_iata, date_str, ws_url=None, ws=None):
                 all_flights.extend(flights)
 
         print(f"[Ctrip] Parsed {len(all_flights)} flights with price data")
+
+        # Capture and log API requests for reverse-engineering
+        try:
+            raw_requests = await cdp_eval(
+                ws,
+                "JSON.stringify(window.__ctripApiRequests || [])",
+                timeout=5,
+            )
+            if raw_requests:
+                api_requests = json.loads(raw_requests)
+                print(f"[Ctrip] Captured {len(api_requests)} API requests:")
+                for i, req in enumerate(api_requests):
+                    url = req.get('url','')
+                    print(f"  [{i}] {req.get('method','')} {url}")
+                    if req.get('headers'):
+                        print(f"      Headers: {json.dumps(req['headers'], ensure_ascii=False)[:500]}")
+                    if req.get('body'):
+                        print(f"      Body: {req['body'][:500]}")
+        except Exception as e:
+            print(f"[Ctrip] Failed to extract API requests: {e}")
+
+        # Capture batchSearch response
+        try:
+            batch_resp = await cdp_eval(
+                ws,
+                "window.__ctripBatchSearchResponse || 'none'",
+                timeout=5,
+            )
+            if batch_resp and batch_resp != 'none':
+                print(f"[Ctrip] batchSearch response (first 2000 chars):")
+                print(batch_resp[:2000])
+        except Exception as e:
+            print(f"[Ctrip] Failed to extract batchSearch response: {e}")
+
         return all_flights
 
     finally:
@@ -817,7 +884,9 @@ async def main():
     print(f"  Total: {total} flights")
 
     if json_output:
+        print("__JSON_START__")
         print(json.dumps(results, ensure_ascii=False, indent=2))
+        print("__JSON_END__")
     else:
         for platform, flights in results.items():
             print(f"\n--- {platform} ---")

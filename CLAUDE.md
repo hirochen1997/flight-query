@@ -1,14 +1,15 @@
 # Flight Query (SkyNet)
 
-Multi-platform Chinese OTA flight price comparison app. Aggregates Fliggy + Ctrip, merges by flight number, and shows best-price platform.
+Multi-platform Chinese OTA flight price comparison app. Aggregates Fliggy + Ctrip + Qunar + Tongcheng, merges by flight number, and shows best-price platform.
 
 ## Stack
 
 - **Backend**: Node.js Express (`server.js`), ES modules
-- **Frontend**: Vanilla JS SPA (`public/index.html`), dark sci-fi theme
-- **Fliggy data**: Node.js MCP client (`fliggy.js`) — direct HTTP call with HMAC-SHA256 + AES-256-GCM. No Python needed.
-- **Ctrip data**: Python Playwright scraper (`ota_scraper.py`) using system Chrome headless (local only)
-- **Qunar / Tongcheng**: Blocked by anti-bot detection, return 0 results
+- **Frontend**: Vanilla JS SPA (`public/index.html`), cyberpunk terminal HUD aesthetic
+- **Fliggy data**: Node.js MCP client (`fliggy.js`) — direct HTTP call with HMAC-SHA256 + AES-256-GCM. No Python needed. Works on Netlify.
+- **Ctrip data**: CDP scraper subprocess (`cdp_scraper.py`) using system Chrome headless (local only). batchSearch API direct call blocked by x-ctx-fvpc encryption.
+- **Qunar data**: CDP scraper (local only). Open platform API at `open.qunar.com` requires business registration — blocked for now.
+- **Tongcheng data**: CDP scraper (local only). Open platform requires business cooperation via eLong (`fxswb@ly.com`) — no self-service registration.
 
 ## Running
 
@@ -17,34 +18,17 @@ node server.js          # or npm start
 # Opens at http://localhost:3000
 ```
 
-### Public access via Cloudflare Tunnel
-
-```bash
-cloudflared tunnel --url http://localhost:3000
-# Generates a public *.trycloudflare.com URL
-```
-
-Note: `trycloudflare.com` domains may be partially blocked in China. For reliable China access, deploy to a Hong Kong or domestic VPS.
-
 ### Production deployment (Netlify)
 
-Site: **https://flight-query.netlify.app** (China-accessible, no VPN needed).
+Site: **https://flight-query.netlify.app**
 
-Fliggy search runs via Netlify Function (Node.js `fliggy.js` → `flyai.open.fliggy.com`). No Mac required — the site works 24/7 from anywhere.
-
-Ctrip scraping is unavailable on Netlify (no Chrome/Python). For multi-platform results, run locally:
-```bash
-node server.js  # Fliggy (Node.js) + Ctrip (Playwright)
-```
+Fliggy search runs via Netlify Function (Node.js `fliggy.js` → `flyai.open.fliggy.com`). Ctrip/Qunar/Tongcheng are unavailable on Netlify (no Chrome/Python).
 
 ```bash
-# Deploy
 npx netlify deploy --dir=public --functions=netlify/functions --prod
 ```
 
 Must access via `http://localhost:3000` — opening `index.html` directly from Finder (file:// protocol) breaks CORS and autocomplete.
-
-FlyClaw must be cloned to `/tmp/FlyClaw`. Ctrip scraping requires Google Chrome at `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`.
 
 ## Architecture
 
@@ -52,39 +36,64 @@ FlyClaw must be cloned to `/tmp/FlyClaw`. Ctrip scraping requires Google Chrome 
 Browser (index.html)
   → POST /api/search { origin, destination, departureDate, ... }
     → server.js
-      → Promise.all:
-        → FlyClaw subprocess (Fliggy MCP → JSON)
-        → ota_scraper.py subprocess (Playwright → Ctrip DOM extraction)
-      → mergeFlightsByNumber()
+      → Promise.allSettled on all 4 sources:
+        → fliggy.search()    → Node.js MCP (flyai.open.fliggy.com)
+        → ctrip.search()     → CDP scraper subprocess (cdp_scraper.py)
+        → qunar.search()     → CDP scraper subprocess (cdp_scraper.py)
+        → tongcheng.search() → CDP scraper subprocess (cdp_scraper.py)
+      → mergeFlightsByNumber() (merge.js)
         → normalize flight numbers (carrier code + digits)
         → group by normalized FN
         → fill missing FNs via time + airline fuzzy matching (±60 min)
         → compute best price platform
-      → JSON response with platformPrices[], searchLinks[]
+      → JSON response with platformPrices[], searchLinks[], meta.allSources[]
 ```
+
+## Source plugin architecture
+
+Each source in `sources/` conforms to:
+```js
+meta: { id, name, requiresChrome, provides }
+search(params) → Flight[]
+isAvailable() → boolean
+```
+
+| File | Platform | Method | Netlify |
+|------|----------|--------|:-------:|
+| `sources/registry.js` | Registry, searchAll(), getAvailableSources | — | — |
+| `fliggy.js` | 飞猪 | MCP HTTP API | ✓ |
+| `sources/ctrip.js` | 携程 | CDP subprocess | ✗ |
+| `sources/qunar.js` | 去哪儿 | CDP subprocess | ✗ |
+| `sources/tongcheng.js` | 同程旅行 | CDP subprocess | ✗ |
 
 ## Multi-airport cities
 
-FlyClaw's `airport_manager.resolve_all("北京")` returns `["PEK", "PKX"]`. Server passes city names to FlyClaw via `resolveFliggyInput()` for multi-airport coverage. Ctrip uses IATA city codes (`BJS` for Beijing, `SHA` for Shanghai, `CTU` for Chengdu) via `getCityCode()`.
+Fliggy MCP handles multi-airport resolution internally. Ctrip uses IATA city codes (`BJS` for Beijing, `SHA` for Shanghai, `CTU` for Chengdu) via `city_map.js:getCityCode()`.
 
 ## Ctrip constraints
 
-- **No direct booking URLs**. Ctrip uses in-page expandable modals (`u_key="flight_action_expand_all_price"`), not `<a>` links. Fallback: search URL with `&flightno=` parameter for pre-filtered results.
-- **Visible flights capped at ~7**. Scraper does not scroll — only above-the-fold `.flight-item` cards are captured.
-- **~30s latency**. Browser launch + 10s JS render wait + DOM extraction.
+- **No direct booking URLs**. Ctrip uses in-page expandable modals, not `<a>` links. Fallback: search URL with `&flightno=` for pre-filtered results.
+- **batchSearch API blocked**. Requires `x-ctx-fvpc` encrypted header generated by Ctrip's client-side JS. CDP scraper is the only working approach.
+- **~30s latency**. Browser already running (headless on port 9223), but page load + JS render + DOM extraction takes time.
 - **Anti-detection**: disables AutomationControlled, overrides navigator.webdriver/chrome/permissions/plugins/languages.
 
 ## Fliggy constraints
 
 - Direct booking links via `a.feizhu.com/XXXXXX` jump URLs.
-- API uses HMAC-SHA256 signing with built-in default credentials. No user configuration needed.
-- ~3-5s response time.
+- API uses HMAC-SHA256 signing with built-in default credentials.
+- ~3-5s response time, ~10 results max.
+
+## Qunar / Tongcheng constraints
+
+- Both require business registration/cooperation for API access.
+- CDP scraper support exists but anti-bot detection blocks both (returns 0 flights).
+- No open/public API available for either platform.
 
 ## Flight matching
 
-`mergeFlightsByNumber()` in server.js:
+`mergeFlightsByNumber()` in `merge.js`:
 1. Normalize flight numbers: extract carrier code prefix (2-char alpha or digit+alpha) + digit suffix
-2. Group by normalized FN across Fliggy + Ctrip
+2. Group by normalized FN across all platforms
 3. For OTA flights without flight numbers: match by `departure_time ± 60 min` + airline name
 4. Airline name normalization: expand abbreviations (`山航` → `山东航空`), strip `航空` suffix, strip `中国` prefix
 
@@ -92,9 +101,16 @@ FlyClaw's `airport_manager.resolve_all("北京")` returns `["PEK", "PKX"]`. Serv
 
 | File | Purpose |
 |------|---------|
-| `server.js` | Express server, search endpoint, merge logic, city/airport mapping |
-| `public/index.html` | Full SPA frontend with autocomplete, search form, results rendering |
-| `ota_scraper.py` | Playwright scraper for Ctrip/Qunar/Tongcheng |
+| `server.js` | Express server, search endpoint, Chrome lifecycle |
+| `public/index.html` | SPA frontend — cyberpunk HUD, autocomplete, results, platform status panel |
+| `fliggy.js` | Fliggy MCP client (HMAC-SHA256 + AES-256-GCM) |
+| `cdp_scraper.py` | CDP/Playwright scraper for Ctrip, Qunar, Tongcheng |
+| `sources/registry.js` | Source registry, parallel search orchestration |
+| `sources/ctrip.js` | Ctrip source — CDP subprocess wrapper |
+| `sources/qunar.js` | Qunar source — CDP subprocess wrapper |
+| `sources/tongcheng.js` | Tongcheng source — CDP subprocess wrapper |
+| `city_map.js` | City name ↔ IATA code resolution, 70+ mappings |
+| `merge.js` | Flight merge logic by flight number + fuzzy matching |
 | `.env` | `PORT=3000` only (no secrets) |
 
 ## Workflow
@@ -110,5 +126,5 @@ FlyClaw's `airport_manager.resolve_all("北京")` returns `["PEK", "PKX"]`. Serv
 
 - Add `file://` protocol support — always use the Express server
 - Remove airline abbreviation normalization without checking matching accuracy
-- Pass single IATA codes to FlyClaw when user input is a city name
+- Pass single IATA codes to Fliggy when user input is a city name
 - Label Ctrip links as "direct booking" when they're search pages
