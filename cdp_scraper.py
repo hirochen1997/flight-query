@@ -25,8 +25,11 @@ import websockets
 
 os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1,::1")
 
-# --- City name to IATA code mapping ---
+# --- City name to IATA city code mapping ---
+# Ctrip uses IATA city codes (BJS/TYO/SHA) which cover all airports in a metro area.
+# Airport-specific IATA codes (NRT, HND, PEK, PKX) are for individual airports.
 CITY_TO_IATA = {
+    # Chinese cities
     "北京": ("BJS", "北京"),
     "上海": ("SHA", "上海"),
     "广州": ("CAN", "广州"),
@@ -51,6 +54,40 @@ CITY_TO_IATA = {
     "贵阳": ("KWE", "贵阳"),
     "南宁": ("NNG", "南宁"),
     "乌鲁木齐": ("URC", "乌鲁木齐"),
+    # Japanese cities
+    "东京": ("TYO", "东京"),
+    "大阪": ("OSA", "大阪"),
+    "名古屋": ("NGO", "名古屋"),
+    "札幌": ("SPK", "札幌"),
+    "福冈": ("FUK", "福冈"),
+    "冲绳": ("OKA", "冲绳"),
+    # Korean cities
+    "首尔": ("SEL", "首尔"),
+    "釜山": ("PUS", "釜山"),
+    "济州": ("CJU", "济州"),
+    # Southeast Asian cities
+    "曼谷": ("BKK", "曼谷"),
+    "普吉岛": ("HKT", "普吉岛"),
+    "清迈": ("CNX", "清迈"),
+    "新加坡": ("SIN", "新加坡"),
+    "吉隆坡": ("KUL", "吉隆坡"),
+    "亚庇": ("BKI", "亚庇"),
+    "胡志明市": ("SGN", "胡志明市"),
+    "河内": ("HAN", "河内"),
+    "岘港": ("DAD", "岘港"),
+    "马尼拉": ("MNL", "马尼拉"),
+    "宿务": ("CEB", "宿务"),
+    # Other popular international
+    "香港": ("HKG", "香港"),
+    "澳门": ("MFM", "澳门"),
+    "台北": ("TPE", "台北"),
+    "伦敦": ("LON", "伦敦"),
+    "巴黎": ("PAR", "巴黎"),
+    "洛杉矶": ("LAX", "洛杉矶"),
+    "旧金山": ("SFO", "旧金山"),
+    "纽约": ("NYC", "纽约"),
+    "悉尼": ("SYD", "悉尼"),
+    "墨尔本": ("MEL", "墨尔本"),
 }
 
 
@@ -834,8 +871,9 @@ async def search_all(origin_cn, dest_cn, date_str, platforms=None):
     origin_cn = resolve_city_name(origin_cn)
     dest_cn = resolve_city_name(dest_cn)
 
-    origin_iata = CITY_TO_IATA.get(origin_cn, ("BJS", origin_cn))[0]
-    dest_iata = CITY_TO_IATA.get(dest_cn, ("SHA", dest_cn))[0]
+    origin_iata = CITY_TO_IATA.get(origin_cn, (origin_cn.upper(), origin_cn))[0]
+    dest_iata = CITY_TO_IATA.get(dest_cn, (dest_cn.upper(), dest_cn))[0]
+    print(f"[search_all] {origin_cn}({origin_iata}) -> {dest_cn}({dest_iata})")
 
     tasks = {}
     if "ctrip" in platforms:
